@@ -1,0 +1,86 @@
+# Encoder Wiring Wiggle Test
+
+The optional encoder wiggle-test firmware helps identify intermittent MT6835
+power and SPI connections. It continuously checks all three encoders while you
+move one wire or connector at a time.
+
+In this mode the firmware holds the motor-driver enable pin low, does not start
+the robot, motion planner, or servo loop, and does not write calibration data.
+It uses a 1 MHz SPI clock to reduce signal-integrity effects while diagnosing
+physical connections.
+
+## Enable and Flash
+
+In `firmware/MotionControllerRP/src/hw_config.h`, uncomment:
+
+```cpp
+#define ENCODER_WIGGLE_TEST
+```
+
+Then build and flash from the firmware directory:
+
+```bash
+cd firmware/MotionControllerRP
+~/.platformio/penv/bin/pio run --target upload
+```
+
+Open the live serial monitor:
+
+```bash
+~/.platformio/penv/bin/pio device monitor \
+  --port /dev/ttyACM0 \
+  --baud 921600 \
+  --filter direct
+```
+
+The serial port may have a different name after reconnecting the controller.
+Press `Ctrl+C` to close the monitor.
+
+Keep the rotor stationary and wiggle only one wire or connector at a time. This
+makes position jumps distinguishable from real rotor movement.
+
+## Output
+
+The firmware prints one line every 100 ms:
+
+```text
+t=12345 | E1 raw=100240 d=-3 max=18 st=0[----] bad=0 crc+=0 id=OK
+```
+
+| Field | Meaning |
+|---|---|
+| `t` | Milliseconds since boot. |
+| `E1`–`E3` | Encoder channel. |
+| `raw` | Accumulated encoder position in raw counts. One encoder-field revolution is 2,097,152 counts. |
+| `d` | Change from the immediately preceding sample. |
+| `max` | Largest absolute change during the latest 100 ms reporting window. |
+| `st` | Latest hexadecimal status and readable flags. `0[----]` is healthy. |
+| `bad` | Samples with at least one status/error flag during the reporting window. |
+| `crc+` | New CRC failures during the reporting window. |
+| `id` | Register write/read communication check, updated once per second. |
+
+The status flags are:
+
+- `O`: overspeed
+- `W`: weak magnetic field
+- `U`: encoder undervoltage
+- `C`: CRC/data-integrity failure
+
+A healthy stationary channel normally has small `d` and `max` values,
+`st=0[----]`, `bad=0`, `crc+=0`, and `id=OK`. An unplugged or intermittent
+channel may show large position jumps, status flags, increasing error counts,
+or `id=FAIL`.
+
+Some MT6835 modules do not provide a reliable CRC byte. Treat `crc+` as one
+signal among several and also inspect `raw`, `max`, `st`, and `id`.
+
+## Restore Normal Firmware
+
+Comment out the diagnostic define again:
+
+```cpp
+// #define ENCODER_WIGGLE_TEST
+```
+
+Build and flash once more. Calibration and normal motion commands are not
+available while the diagnostic mode is enabled.

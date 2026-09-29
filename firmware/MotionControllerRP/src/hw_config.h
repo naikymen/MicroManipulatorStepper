@@ -1,6 +1,10 @@
 #pragma once
 #include "utilities/math_constants.h"
 
+// Motor-safe firmware mode for diagnosing intermittent encoder wiring.
+// See documentation/setup_guide/encoder_wiggle_test.md.
+// #define ENCODER_WIGGLE_TEST
+
 // #define DEMO_MODE
 
 //--- MOTORS ------------------------------------------------------------------

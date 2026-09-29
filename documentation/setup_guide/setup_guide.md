@@ -29,6 +29,10 @@ This guide walks you through the setup of your new **Open Micro-Manipulator** de
 You can use the calibration plotter to check if your encoders are working as expected.
 On the left you see a good calibration on the right a bad calibration.
 
+If an encoder reading changes when cables or connectors are touched, use the
+[motor-safe encoder wiggle test](encoder_wiggle_test.md) before attempting
+calibration.
+
 | <img src="good_calibration.jpg"> | <img src="bad_calibration.jpg"> |
 :--:|:--:
 | **Good calibration** | **Bad calibration** |
