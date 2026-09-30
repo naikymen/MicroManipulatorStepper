@@ -199,7 +199,9 @@ bool LookupTable::optimize_lut(std::vector<std::pair<float, float>> in_out_pairs
     //  LOG_DEBUG("iteration %04i: rms=%f", iter, sqrtf(total_loss));
   }
 
-  rms_error = sqrt(total_loss);
+  // Root-mean-square error: normalize the accumulated squared error by the
+  // number of measurements before taking the square root.
+  rms_error = sqrtf(total_loss / static_cast<float>(in_out_pairs.size()));
   LOG_DEBUG("Optimizing lookup table finished: rms_error=%f", rms_error);
 
   return true;

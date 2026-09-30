@@ -6,6 +6,7 @@
 // --------------------------------------------------------------------------------------
 
 #include <algorithm>
+#include <cmath>
 
 #include "servo_controller.h"
 #include "utilities/logging.h"
@@ -100,10 +101,14 @@ bool measure_calibration_data(
     return false;
   }
   encoder_raw_to_motor_pos_lut.optimize_lut(encoder_angle_and_motor_pos, rmse);
+  if(!std::isfinite(rmse)) {
+    LOG_ERROR("Creating lookup table 'encoder_raw_angle -> motor_pos' produced a non-finite fitting error.");
+    return false;
+  }
   if(rmse > max_rmse_rad) {
-    LOG_WARNING("Fitting error of lookup table 'encoder_raw_angle -> motor_pos' unusually high (rms_error = %f deg)."
-                "Calibration might be invalid.", 
-                Constants::RAD2DEG*rmse);
+    LOG_ERROR("Fitting error of lookup table 'encoder_raw_angle -> motor_pos' too high (rms_error = %f deg).",
+              Constants::RAD2DEG*rmse);
+    return false;
   }
 
   // build lookup table 'motor_pos -> field_angle'
@@ -113,10 +118,10 @@ bool measure_calibration_data(
     return false;
   }
   motor_pos_to_field_angle_lut.optimize_lut(motor_pos_and_field_angle, rmse);
-    if(rmse > max_rmse_rad) {
-    LOG_WARNING("Fitting error of lookup table 'motor_pos -> field_angle' is unusually high (rms_error = %f deg)."
-                "Calibration might be invalid.", 
-                Constants::RAD2DEG*rmse);
+  if(rmse > max_rmse_rad) {
+    LOG_ERROR("Fitting error of lookup table 'motor_pos -> field_angle' too high (rms_error = %f deg).",
+              Constants::RAD2DEG*rmse);
+    return false;
   }
 
   LOG_INFO("finished");

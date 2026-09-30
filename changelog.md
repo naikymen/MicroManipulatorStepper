@@ -32,3 +32,11 @@
 - The board shares this enable pin across every driver; managing it as a shared
   resource prevents calibration from silently producing no motion after `M18`
   or a diagnostic while still leaving the hardware disabled when requested.
+
+## Reject invalid calibration fits
+
+- Correct lookup-table error reporting to calculate root-mean-square error
+  instead of the sample-count-dependent root-sum-square value.
+- Treat non-finite encoder fits and fits above 0.5 degrees RMS as calibration
+  failures rather than warnings, preventing disconnected or flat encoder data
+  from being accepted and saved as a valid calibration.
