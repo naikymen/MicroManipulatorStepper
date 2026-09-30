@@ -40,3 +40,11 @@
 - Treat non-finite encoder fits and fits above 0.5 degrees RMS as calibration
   failures rather than warnings, preventing disconnected or flat encoder data
   from being accepted and saved as a valid calibration.
+
+## Tune motor current and calibration speed for this machine
+
+- Set the motor PWM amplitude cap to 30% for the 12 V supply and approximately
+  6-ohm windings, and reduce homing and calibration field velocities.
+- These conservative values limit average winding current to roughly 0.6 A,
+  stay within the available 2-3 A power-supply budget, and produced reliable
+  motion and sub-0.15-degree calibration fits on all three installed axes.

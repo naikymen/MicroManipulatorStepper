@@ -22,7 +22,10 @@ constexpr float MOTOR3_POLE_PAIRS = 50;
 
 // max current factor in range [0..1]. Lower values reduce pwm resolution so a
 // value above 0.4 is recommended.
-constexpr float MOTOR_MAX_CURRENT_FACTOR = 0.6f;
+// This machine uses a 12 V motor supply and approximately 6 ohm windings.
+// Limit PWM to roughly 0.6 A average winding current. The TB6612 has no
+// current feedback, so this remains a voltage-duty approximation.
+constexpr float MOTOR_MAX_CURRENT_FACTOR = 0.30f;
 
 //--- ENCODERS ----------------------------------------------------------------
 
@@ -39,7 +42,9 @@ constexpr bool ENABLE_ENCODER_CRC = false;
 
 //--- HOMING ------------------------------------------------------------------
 
-constexpr float HOMING_VELOCITY   = 1.0f;        // rad per s
+// Mechanical velocity. With 50 pole pairs this produces a 10 rad/s electrical
+// field, still well below the original 50 rad/s setting.
+constexpr float HOMING_VELOCITY   = 0.2f;        // rad per s
 constexpr float HOMING_CURRENT    = 0.15f;       // range 0..1
 // NOT IMPLEMENTED YET: constexpr float HOMING_FINISH_POS = 0.5f;        // in rad
 
@@ -49,7 +54,7 @@ constexpr float HOMING_CURRENT    = 0.15f;       // range 0..1
 constexpr float CALIBRATION_RANGE = 83; 
 
 // velocity of the magnetic field during calibration (lower is more accurate)
-constexpr float CALIBRATION_FIELD_VELOCITY = 20.0f; 
+constexpr float CALIBRATION_FIELD_VELOCITY = 10.0f;
 
 // size of the calibration lookup table
 constexpr int ENCODER_LUT_SIZE = 256;
