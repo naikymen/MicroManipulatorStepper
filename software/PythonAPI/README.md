@@ -54,7 +54,24 @@ python calibration_plotter.py --list-ports
 python calibration_plotter.py --port /dev/ttyACM0
 ```
 
-The calibration script opens a matplotlib window with the measured calibration curves.
+By default, the calibration script preserves its original behavior: it prints
+the raw samples, does not save results, continues after errors, and opens a
+matplotlib window. Optional controls are available when needed:
+
+- `--save`: persist each firmware-validated calibration to controller flash.
+- `--quiet`: suppress raw sample rows while retaining progress and firmware logs.
+- `--stop-on-error`: stop before attempting later joints after a failed result.
+- `--no-plot`: do not open the matplotlib window.
+- `--disable-after`: send `M18` after completion and on exceptional exit.
+
+For a non-interactive calibration that saves validated results and leaves the
+drivers disabled, run:
+
+```bash
+python calibration_plotter.py \
+  --port /dev/serial/by-id/usb-2e8a_Micro-Manipulator_81A5365DC37CD552-if00 \
+  --save --quiet --stop-on-error --no-plot --disable-after
+```
 
 ## Running From The Repository Root
 

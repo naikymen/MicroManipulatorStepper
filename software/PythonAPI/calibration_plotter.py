@@ -2,7 +2,7 @@ import argparse
 
 import matplotlib.pyplot as plt
 
-from open_micro_stage_api import OpenMicroStageInterface
+from open_micro_stage_api import OpenMicroStageInterface, SerialInterface
 
 plt.rcParams['figure.dpi'] = 200
 
@@ -84,6 +84,31 @@ def parse_args():
         action='store_true',
         help='List detected serial devices and exit.',
     )
+    parser.add_argument(
+        '--save',
+        action='store_true',
+        help='Save each calibration to controller flash after validation.',
+    )
+    parser.add_argument(
+        '--no-plot',
+        action='store_true',
+        help='Run calibration without opening the plot window.',
+    )
+    parser.add_argument(
+        '--quiet',
+        action='store_true',
+        help='Suppress the thousands of raw calibration rows in the terminal.',
+    )
+    parser.add_argument(
+        '--stop-on-error',
+        action='store_true',
+        help='Stop instead of continuing when a joint calibration fails.',
+    )
+    parser.add_argument(
+        '--disable-after',
+        action='store_true',
+        help='Send M18 after calibration and on exceptional exit.',
+    )
     return parser.parse_args()
 
 
@@ -94,7 +119,10 @@ def main():
         return
 
     port = resolve_port(args.port)
-    oms = OpenMicroStageInterface(show_communication=True, show_log_messages=True)
+    oms = OpenMicroStageInterface(
+        show_communication=not args.quiet,
+        show_log_messages=True,
+    )
     if not oms.connect(port):
         raise SystemExit(f'Could not connect to {port}.')
 
@@ -103,13 +131,34 @@ def main():
         fig, ax = plt.subplots(1, 1, figsize=(10, 7), sharex='all')
 
         for i in range(3):
-            res, data = oms.calibrate_joint(i, save_result=False)
+            if args.quiet:
+                print(f'Calibrating joint {i}...')
+            res, data = oms.calibrate_joint(i, save_result=args.save)
+            if args.stop_on_error:
+                if res != SerialInterface.ReplyStatus.OK:
+                    raise RuntimeError(f'Joint {i} calibration failed ({res.name}); stopping.')
+                if len(data) != 3 or any(len(column) == 0 for column in data):
+                    raise RuntimeError(f'Joint {i} returned no calibration samples; stopping.')
+
+            if args.quiet and res == SerialInterface.ReplyStatus.OK:
+                print(f'Joint {i}: OK ({len(data[0])} samples)'
+                      + (' and saved' if args.save else ''))
             plot_calibration_data(ax, None, f'Actuator {i}', data)
+
+        if args.disable_after:
+            # Do not leave calibrated motors energized while the plot is open.
+            status, _ = oms.serial.send_command('M18', timeout=10)
+            if status != SerialInterface.ReplyStatus.OK:
+                raise RuntimeError(f'Could not disable motors ({status.name}).')
 
         # Adjust layout and show
         plt.tight_layout()
-        plt.show()
+        if not args.no_plot:
+            plt.show()
     finally:
+        if args.disable_after and oms.is_connected():
+            # Best-effort shutdown also covers exceptions and interrupted runs.
+            oms.serial.send_command('M18', timeout=10)
         oms.disconnect()
 
 

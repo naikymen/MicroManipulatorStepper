@@ -48,3 +48,13 @@
 - These conservative values limit average winding current to roughly 0.6 A,
   stay within the available 2-3 A power-supply budget, and produced reliable
   motion and sub-0.15-degree calibration fits on all three installed axes.
+
+## Add opt-in Python calibration controls
+
+- Add optional calibration flags for saving, quiet output, fail-fast handling,
+  headless execution, and disabling the motors after a run, plus a documented
+  safe command that combines them.
+- Extend the API calibration timeout from 30 to 120 seconds so conservative
+  current and speed settings can complete without a false host-side timeout.
+- All flags default off, preserving the script's original verbose, unsaved,
+  continue-on-error, plotting behavior for existing users.

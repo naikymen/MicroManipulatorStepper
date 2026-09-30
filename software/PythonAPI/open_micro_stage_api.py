@@ -393,7 +393,9 @@ class OpenMicroStageInterface:
         """
         cmd = f"M56 J{joint_index} P"
         if save_result: cmd += ' S'
-        res, msg = self.serial.send_command(cmd, 30)
+        # Slow/current-limited setups can legitimately take longer than the
+        # former 30-second command timeout.
+        res, msg = self.serial.send_command(cmd, 120)
 
         calibration_data = self._parse_table_data(msg, 3)
         return res, calibration_data
