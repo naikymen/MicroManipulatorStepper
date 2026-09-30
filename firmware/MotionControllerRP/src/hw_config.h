@@ -5,6 +5,10 @@
 // See documentation/setup_guide/encoder_wiggle_test.md.
 // #define ENCODER_WIGGLE_TEST
 
+// Interactive, low-duty motor output test that bypasses the robot and encoders.
+// See documentation/setup_guide/motor_step_test.md.
+// #define MOTOR_STEP_TEST
+
 // #define DEMO_MODE
 
 //--- MOTORS ------------------------------------------------------------------

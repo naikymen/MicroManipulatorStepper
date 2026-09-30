@@ -6,3 +6,13 @@
   `/dev/serial/by-id` path at the firmware's 921600 baud rate.
 - This avoids uploads and monitoring targeting the wrong device when transient
   `/dev/ttyACM*` numbers change after reconnecting or rebooting the controller.
+
+## Add an optional standalone motor-driver test mode
+
+- Add a compile-time `MOTOR_STEP_TEST` mode with low-duty 1/16-microstep moves,
+  individual phase holds, and automatic output disable after each test.
+- Document its serial commands, current-limiting assumptions, and restoration
+  procedure in the setup guide.
+- The mode is disabled by default so production motion and calibration behavior
+  is unchanged; it exists to distinguish wiring, motor, socket, and driver
+  faults without involving encoder feedback or closed-loop control.

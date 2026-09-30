@@ -33,6 +33,10 @@ If an encoder reading changes when cables or connectors are touched, use the
 [motor-safe encoder wiggle test](encoder_wiggle_test.md) before attempting
 calibration.
 
+If a motor does not move correctly, use the optional
+[interactive motor step test](motor_step_test.md) to test the drivers and
+windings without encoder feedback.
+
 | <img src="good_calibration.jpg"> | <img src="bad_calibration.jpg"> |
 :--:|:--:
 | **Good calibration** | **Bad calibration** |
