@@ -39,10 +39,6 @@ enum class ERobotState {
 
 // shared data used to communicte between CPU cores
 struct SharedData {
-  SharedData(int hw_spinlock_id=0){
-    lock = spin_lock_instance(hw_spinlock_id);
-  };
-
   volatile float joint_target_positions[NUM_JOINTS];
   volatile float joint_target_velocities[NUM_JOINTS];
   spin_lock_t* lock = nullptr;

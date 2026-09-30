@@ -18,9 +18,6 @@
 #include "version.h"
 #include "robot_tool/pwm_tool.h"
 
-constexpr int SPINLOCK_ID_SHARED_DATA = 0;
-constexpr int SPINLOCK_ID_JOINTS = 1;
-
 #include <NeoPixelConnect.h>
 NeoPixelConnect led(PIN_BUILTIN_LED, 1);
 
@@ -39,9 +36,7 @@ Robot::Robot(float path_segment_time_step) :
   path_planner(nullptr, path_segment_time_step), 
   motion_controller(&path_planner),
   servo_loop_frequency_counter(10000),
-  motion_controller_frequency_counter(1000),
-  shared_data(SPINLOCK_ID_SHARED_DATA),
-  joints_spin_lock(spin_lock_instance(SPINLOCK_ID_JOINTS))
+  motion_controller_frequency_counter(1000)
 {
   kinematic_model = new KinematicModel_Delta3D();
   path_planner.set_kinematic_model(kinematic_model);
@@ -73,6 +68,11 @@ Robot::~Robot() {
 }
 
 void Robot::init() {
+  // IDs 0-23 are reserved or shared by the Pico SDK. Claim exclusive locks
+  // from its safe allocation range instead of colliding with SDK internals.
+  shared_data.lock = spin_lock_init(spin_lock_claim_unused(true));
+  joints_spin_lock = spin_lock_init(spin_lock_claim_unused(true));
+
   MT6835Encoder::setup_spi(spi0, PIN_ENCODER_SCK, PIN_ENCODER_MOSI, PIN_ENCODER_MISO, 8000000);
 
   // axis 1
@@ -773,4 +773,3 @@ void Robot::process_tool_output_command(const GCodeCommand& cmd, std::string& re
 
   reply = "ok\n";
 }
-

@@ -16,3 +16,11 @@
 - The mode is disabled by default so production motion and calibration behavior
   is unchanged; it exists to distinguish wiring, motor, socket, and driver
   faults without involving encoder feedback or closed-loop control.
+
+## Fix RP2350 multicore synchronization
+
+- Replace hard-coded hardware spinlock IDs 0 and 1 with locks claimed from the
+  Pico SDK's unused pool during robot initialization.
+- The fixed IDs overlap SDK-reserved locks and caused the second-core servo loop
+  to interfere with motor control; runtime allocation prevents that collision
+  while preserving the existing locking model.
