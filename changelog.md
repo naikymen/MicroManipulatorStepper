@@ -66,3 +66,12 @@
 - Keeping the GUI as a pinned submodule makes its exact compatible revision
   reproducible without copying or mixing its independent history into the
   firmware repository.
+
+## Document firmware and debug-mode workflows
+
+- Add a firmware README covering the hardware interfaces, multicore runtime,
+  persistent calibration data, source layout, configuration locations, and
+  command-line build workflow not detailed by the main project README.
+- Explain how to enable, build, flash, monitor, use, and disable both firmware
+  diagnostics, emphasizing mutual exclusion, motor-current safety, and
+  restoration of normal firmware after testing.
