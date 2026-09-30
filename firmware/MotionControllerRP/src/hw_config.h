@@ -1,13 +1,11 @@
 #pragma once
 #include "utilities/math_constants.h"
 
-// Motor-safe firmware mode for diagnosing intermittent encoder wiring.
-// See documentation/setup_guide/encoder_wiggle_test.md.
-// #define ENCODER_WIGGLE_TEST
-
-// Interactive, low-duty motor output test that bypasses the robot and encoders.
-// See documentation/setup_guide/motor_step_test.md.
-// #define MOTOR_STEP_TEST
+// Optional standalone diagnostics are selected through the encoder_wiggle_test
+// and motor_step_test environments in platformio.ini; no source edit is needed.
+#if defined(ENCODER_WIGGLE_TEST) && defined(MOTOR_STEP_TEST)
+  #error "Select only one firmware diagnostic environment"
+#endif
 
 // #define DEMO_MODE
 

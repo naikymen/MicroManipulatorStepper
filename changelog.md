@@ -75,3 +75,13 @@
 - Explain how to enable, build, flash, monitor, use, and disable both firmware
   diagnostics, emphasizing mutual exclusion, motor-current safety, and
   restoration of normal firmware after testing.
+
+## Add dedicated PlatformIO diagnostic environments
+
+- Add `encoder_wiggle_test` and `motor_step_test` build environments while
+  keeping `pico` as the default normal-firmware environment.
+- Move diagnostic selection out of `hw_config.h`, preventing stale source
+  toggles and accidental simultaneous activation while allowing each image to
+  be built and flashed with one explicit PlatformIO command.
+- Update the firmware and setup documentation with the new environment-based
+  build, upload, monitoring, and normal-firmware restoration workflow.

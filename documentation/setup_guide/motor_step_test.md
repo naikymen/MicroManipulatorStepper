@@ -10,9 +10,16 @@ motor, driver, socket, or winding faults before calibration.
 
 ## Enable and flash
 
-Uncomment `#define MOTOR_STEP_TEST` in
-`firmware/MotionControllerRP/src/hw_config.h`, then build and upload the
-firmware. Do not enable this mode and `ENCODER_WIGGLE_TEST` at the same time.
+Build and flash the dedicated diagnostic environment from the repository root.
+No source-file edit is required:
+
+```bash
+cd firmware/MotionControllerRP
+~/.platformio/penv/bin/pio run --environment motor_step_test --target upload
+```
+
+The separate PlatformIO environment prevents this mode and
+`ENCODER_WIGGLE_TEST` from being enabled together.
 
 Open the serial monitor at 921600 baud. The mode starts with all outputs
 disabled and accepts one-character commands:
@@ -29,5 +36,9 @@ The normal motion firmware does not run in this mode. Each movement uses a low
 duty cap (15% for motors 1 and 2 and 14.5% for motor 3), ramps the output, and
 disables the shared driver enable afterward.
 
-After testing, comment out `#define MOTOR_STEP_TEST` and flash again to restore
-normal operation.
+After testing, restore normal operation by flashing the default environment:
+
+```bash
+cd firmware/MotionControllerRP
+~/.platformio/penv/bin/pio run --environment pico --target upload
+```

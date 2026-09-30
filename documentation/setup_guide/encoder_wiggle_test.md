@@ -11,17 +11,12 @@ physical connections.
 
 ## Enable and Flash
 
-In `firmware/MotionControllerRP/src/hw_config.h`, uncomment:
-
-```cpp
-#define ENCODER_WIGGLE_TEST
-```
-
-Then build and flash from the firmware directory:
+Build and flash the dedicated diagnostic environment from the firmware
+directory. No source-file edit is required:
 
 ```bash
 cd firmware/MotionControllerRP
-~/.platformio/penv/bin/pio run --target upload
+~/.platformio/penv/bin/pio run --environment encoder_wiggle_test --target upload
 ```
 
 Open the live serial monitor:
@@ -76,11 +71,12 @@ signal among several and also inspect `raw`, `max`, `st`, and `id`.
 
 ## Restore Normal Firmware
 
-Comment out the diagnostic define again:
+Build and flash the normal `pico` environment:
 
-```cpp
-// #define ENCODER_WIGGLE_TEST
+```bash
+cd firmware/MotionControllerRP
+~/.platformio/penv/bin/pio run --environment pico --target upload
 ```
 
-Build and flash once more. Calibration and normal motion commands are not
-available while the diagnostic mode is enabled.
+Calibration and normal motion commands are not available while the diagnostic
+image is running.

@@ -22,7 +22,7 @@ mechanics, supply voltage, or wiring.
 
 ## Runtime architecture
 
-Normal firmware divides time-sensitive work across the RP2350:
+The main firmware divides time-sensitive work across the RP2350:
 
 - Core 0 receives USB serial commands and feeds the path planner.
 - A 500 microsecond repeating timer advances the motion controller and publishes
@@ -90,9 +90,9 @@ The RP2350 firmware includes two optional standalone diagnostic modes:
   kinematic model, homing, or closed-loop controller. It helps isolate motor,
   winding, driver, socket, and output-wiring faults.
 
-Both modes are disabled by default. Normal motion, homing, and calibration are
-unavailable while either diagnostic is enabled. Enable only one mode at a
-time.
+Each diagnostic has its own PlatformIO environment, so no source file needs to
+be edited. The default `pico` environment always builds normal firmware. Normal
+motion, homing, and calibration are unavailable in either diagnostic image.
 
 ### Prerequisites
 
@@ -109,37 +109,26 @@ The configured upload and monitor port is the controller's stable device path:
 If using another controller, update `upload_port` and `monitor_port` in
 `MotionControllerRP/platformio.ini`.
 
-### Enable a mode
-
-Open `MotionControllerRP/src/hw_config.h`. To diagnose encoder connections,
-change:
-
-```cpp
-// #define ENCODER_WIGGLE_TEST
-```
-
-to:
-
-```cpp
-#define ENCODER_WIGGLE_TEST
-```
-
-Alternatively, to test motor outputs, uncomment:
-
-```cpp
-#define MOTOR_STEP_TEST
-```
-
-Do not uncomment both definitions simultaneously.
-
-### Build and flash
+### Select, build, and flash a mode
 
 Connect the controller over USB, then run from the repository root:
 
 ```bash
 cd firmware/MotionControllerRP
-~/.platformio/penv/bin/pio run --target upload
+~/.platformio/penv/bin/pio run --environment encoder_wiggle_test --target upload
 ```
+
+That command builds and flashes the `ENCODER_WIGGLE_TEST` image. To build and
+flash the standalone `MOTOR_STEP_TEST` image instead, run:
+
+```bash
+~/.platformio/penv/bin/pio run --environment motor_step_test --target upload
+```
+
+In the PlatformIO VS Code extension, the equivalent workflow is to select
+`encoder_wiggle_test` or `motor_step_test` in the environment selector and use
+the Upload action. Because the modes are separate environments, they cannot be
+accidentally enabled together.
 
 A successful upload ends with `SUCCESS`. Open the live serial output afterward:
 
@@ -184,19 +173,11 @@ for the configured duty limits and additional safety notes.
 
 ### Restore normal firmware
 
-Comment out the enabled definition in `MotionControllerRP/src/hw_config.h` so
-the beginning of the file contains:
-
-```cpp
-// #define ENCODER_WIGGLE_TEST
-// #define MOTOR_STEP_TEST
-```
-
-Then build and upload again:
+Build and upload the default `pico` environment again:
 
 ```bash
 cd firmware/MotionControllerRP
-~/.platformio/penv/bin/pio run --target upload
+~/.platformio/penv/bin/pio run --environment pico --target upload
 ```
 
 Normal robot initialization, motion, homing, and calibration will be restored.
