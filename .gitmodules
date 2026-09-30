@@ -1,0 +1,3 @@
+[submodule "software/OpenMicroManipulatorGUI"]
+	path = software/OpenMicroManipulatorGUI
+	url = https://github.com/0x23/OpenMicroManipulatorGUI.git

@@ -58,3 +58,11 @@
   current and speed settings can complete without a false host-side timeout.
 - All flags default off, preserving the script's original verbose, unsaved,
   continue-on-error, plotting behavior for existing users.
+
+## Add the Open Micro-Manipulator GUI as a submodule
+
+- Register `software/OpenMicroManipulatorGUI` as a Git submodule pointing to
+  its upstream `0x23/OpenMicroManipulatorGUI` repository.
+- Keeping the GUI as a pinned submodule makes its exact compatible revision
+  reproducible without copying or mixing its independent history into the
+  firmware repository.
