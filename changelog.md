@@ -24,3 +24,11 @@
 - The fixed IDs overlap SDK-reserved locks and caused the second-core servo loop
   to interfere with motor control; runtime allocation prevents that collision
   while preserving the existing locking model.
+
+## Correct shared motor-driver standby handling
+
+- Make motor enable operations explicitly reassert the TB6612 standby pin, and
+  make `M18` enter standby only after all three channel amplitudes reach zero.
+- The board shares this enable pin across every driver; managing it as a shared
+  resource prevents calibration from silently producing no motion after `M18`
+  or a diagnostic while still leaving the hardware disabled when requested.

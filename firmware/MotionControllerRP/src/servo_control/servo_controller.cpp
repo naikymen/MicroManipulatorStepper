@@ -201,6 +201,10 @@ float ServoController::get_pole_pair_count() {
 
 void ServoController::set_motor_enabled(bool enable, bool synchronize_field_angle) {
   if(enable) {
+    // All three drivers share the hardware enable pin. It may have been put in
+    // standby by M18 or a diagnostic, so always reassert it before ramping PWM.
+    motor_driver.enable();
+
     // synchronize field angle to motor_pos
     if(synchronize_field_angle) {
       float start_field_angle = motor_pos_to_field_angle(motor_pos);

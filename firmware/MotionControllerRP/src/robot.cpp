@@ -480,6 +480,9 @@ void Robot::process_machine_command(const GCodeCommand& cmd, std::string& reply)
     spin_lock_unsafe_blocking(joints_spin_lock);
     for(int i=0; i<NUM_JOINTS; i++)
       joints[i]->servo_controller->set_motor_enabled(false, false);
+    // The enable pin is shared, so put all drivers into standby only after
+    // every channel has ramped to zero. Enabling any motor reasserts this pin.
+    joints[0]->servo_controller->get_motor_driver().disable();
     spin_unlock_unsafe(joints_spin_lock);
     
     reply = "ok\n";
