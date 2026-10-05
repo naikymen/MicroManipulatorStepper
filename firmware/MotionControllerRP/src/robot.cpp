@@ -258,7 +258,8 @@ void Robot::enable_servo_control(bool enable) {
   spin_lock_unsafe_blocking(joints_spin_lock);
 
   for(int i=0; i<NUM_JOINTS; i++) {
-    bool en = joints[i]->is_homed && joints[i]->is_calibrated && enable;
+    bool en = joints[i]->is_homed && joints[i]->is_calibrated && enable &&
+              joints[i]->servo_controller->get_motor_driver().get_amplitude() > 0.0f;
     LOG_DEBUG(en ? "Joint-%i: servo control enabled" : "Joint-%i: servo control disabled", i);
     joints[i]->servo_controller->set_motor_update_enabled(en);
   }
@@ -471,12 +472,16 @@ void Robot::process_machine_command(const GCodeCommand& cmd, std::string& reply)
     }
     spin_unlock_unsafe(joints_spin_lock);
 
+    // M18 can leave feedback paused. Resume only homed, calibrated, powered axes.
+    enable_servo_control(true);
+
     reply = "ok\n";
     return;
   }
 
   // disable motors
   if(cmd.get_command() == "M18") {     
+    enable_servo_control(false);
     spin_lock_unsafe_blocking(joints_spin_lock);
     for(int i=0; i<NUM_JOINTS; i++)
       joints[i]->servo_controller->set_motor_enabled(false, false);

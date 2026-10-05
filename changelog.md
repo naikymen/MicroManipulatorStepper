@@ -95,3 +95,15 @@
   idle; verified in an offscreen Qt run with mocked hardware.
 - The updated reference also includes the previously committed incremental
   jog-limit fix (`57bbae6`), which avoids jumps back to the allowed boundary.
+
+## Preserve servo state across motor disable and feedback restart
+
+- Keep the shared driver standby line inactive at boot until a motor is
+  explicitly enabled. At zero amplitude, continue encoder tracking without
+  advancing the field command or accumulating PID correction.
+- Pause feedback before `M18`, exclude unpowered channels from feedback
+  restart, and resume eligible powered channels after `M17`.
+- Refresh encoder-based velocity history when feedback resumes and support
+  a bounded initial PID integral for retaining the held field. These changes
+  address stale-history impulses and corrections accumulated while motors
+  were off; current and PID output limits are unchanged.

@@ -43,7 +43,8 @@ void ServoController::init(float max_motor_amplitude) {
   // setup motor driver
   motor_driver.begin();
   motor_driver.set_amplitude(0.0f, true); // correct amplitude will be set by 'set_motor_enabled()' 
-  motor_driver.enable();
+  // begin() leaves the shared standby line low. Keep it there until a motor is
+  // explicitly enabled so the first motion gets a real standby-to-active edge.
   motor_driver.set_field_angle(0.0f);
 
   velocity_lowpass.set_time_constant(VEL_LOWPASS_TC);
@@ -87,10 +88,20 @@ void ServoController::update(float target_motor_pos, float dt, float one_over_dt
 
   // convert encoder angle to motor pos using LUT and compute field angle
   motor_pos = encoder_angle_to_motor_pos(encoder_angle_raw);
+  pos_error = target_motor_pos-motor_pos;
+  if(motor_driver.get_amplitude() == 0.0f) {
+    // Keep encoder tracking alive while off, but do not wind up the controllers
+    // or advance a field that could pull the rotor on its next power-up.
+    pos_controller.reset();
+    velocity_controller.reset();
+    velocity_lowpass.reset(0.0f);
+    velocity = output = 0.0f;
+    motor_pos_prev = motor_pos;
+    return;
+  }
   float field_angle = motor_pos_to_field_angle(motor_pos);
 
   // position controll loop
-  pos_error = target_motor_pos-motor_pos;
   float velocity_target = pos_controller.compute(pos_error, dt, one_over_dt);
 
   // velocity controll loop
@@ -224,8 +235,22 @@ void ServoController::set_motor_enabled(bool enable, bool synchronize_field_angl
 
 // enable or disable servo loop update and encoder reads
 void ServoController::set_motor_update_enabled(bool enable) {
+  if(enable) {
+    // Open-loop homing may have moved the motor while servo updates were blocked.
+    // Start velocity estimation from a fresh encoder position, not the old cache.
+    motor_pos = read_position();
+  }
   pos_controller.reset();
-  velocity_controller.reset();
+  #ifdef HOMING_BUMPLESS_SERVO_RESTART
+    // Retain the held field's offset from the calibrated reference on restart.
+    // PID reset clamps this preload to the existing integral/output limits.
+    float held_field_offset = enable ? remainderf(motor_driver.get_field_angle() -
+                                                  motor_pos_to_field_angle(motor_pos),
+                                                  Constants::TWO_PI_F) : 0.0f;
+    velocity_controller.reset(held_field_offset);
+  #else
+    velocity_controller.reset();
+  #endif
   velocity_lowpass.reset(0.0f);
   motor_pos_prev = motor_pos;
   motor_update_enabled = enable;

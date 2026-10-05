@@ -24,7 +24,8 @@ class PIDController {
 
     void  set_parameter(float kP, float kI, float kD, float output_limit, float windup_limit);
     float compute(float error, float dt, float one_over_dt);
-    void  reset();
+    // Optional initial integral output for a bumpless controller handover.
+    void  reset(float initial_integral_output = 0.0f);
 
   protected:
     float output_limit; // Maximum output value

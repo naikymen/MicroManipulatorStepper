@@ -48,8 +48,8 @@ float PIDController::compute(float error, float dt, float one_over_dt) {
   return output;
 }
 
-void PIDController::reset(){
-  integral_prev = 0.0f;
+void PIDController::reset(float initial_integral_output){
+  integral_prev = std::clamp(initial_integral_output, -windup_limit, windup_limit);
   error_prev = 0.0f;
 }
 
