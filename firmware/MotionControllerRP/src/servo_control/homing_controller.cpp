@@ -4,7 +4,8 @@
 #include "pico/time.h"
 
 HomingController::HomingController() {
-  retract_field_velocity = 100.0f; // rad per second
+  // Electrical rad/s: slow the post-home backoff without changing its distance.
+  retract_field_velocity = 10.0f;
   retract_field_angle = Constants::TWO_PI_F*0.25f;
 }
 

@@ -6,6 +6,7 @@
 // --------------------------------------------------------------------------------------
 
 #include <LittleFS.h> 
+#include <cmath>
 #include "robot.h"
 #include "hw_config.h"
 #include "utilities/logging.h"
@@ -251,20 +252,41 @@ void Robot::update_servo_controllers(float dt) {
   servo_loop_frequency_counter.update(dt);
 }
 
-void Robot::enable_servo_control(bool enable) {
+bool Robot::enable_servo_control(bool enable) {
   // LOG_DEBUG(enable ? "Enable servo control" : "Disable servo sontrol");
 
   // update servo loop for each axis
   spin_lock_unsafe_blocking(joints_spin_lock);
 
+  bool restart_ok = true;
   for(int i=0; i<NUM_JOINTS; i++) {
     bool en = joints[i]->is_homed && joints[i]->is_calibrated && enable &&
               joints[i]->servo_controller->get_motor_driver().get_amplitude() > 0.0f;
+    #ifdef HOMING_RESTART_GUARD
+      if(en) {
+        auto* servo = joints[i]->servo_controller;
+        int32_t raw = servo->get_encoder().read_abs_angle_raw();
+        float reference = servo->motor_pos_to_field_angle(servo->encoder_angle_to_motor_pos(raw));
+        float mismatch = remainderf(reference-servo->get_motor_driver().get_field_angle(), Constants::TWO_PI_F);
+        bool in_lut = servo->get_enc_to_pos_lut().in_input_range(raw);
+        // Leave margin below the existing +/-81 degree PID correction limit.
+        // This preflight is not a physical travel-limit guarantee.
+        if(!in_lut || !std::isfinite(mismatch) || fabsf(mismatch) > 75.0f*Constants::DEG2RAD) {
+          LOG_INFO("HOME GUARD: axis %i restart refused; in_lut=%i mismatch_deg=%f",
+                   i+1, int(in_lut), mismatch*Constants::RAD2DEG);
+          en = false;
+          // A refused handover is not a ready axis or a successful Home.
+          joints[i]->is_homed = false;
+          restart_ok = false;
+        }
+      }
+    #endif
     LOG_DEBUG(en ? "Joint-%i: servo control enabled" : "Joint-%i: servo control disabled", i);
     joints[i]->servo_controller->set_motor_update_enabled(en);
   }
 
   spin_unlock_unsafe(joints_spin_lock);
+  return restart_ok;
 }
 
 void Robot::set_pose(const Pose6DF& pose) {
@@ -380,12 +402,12 @@ bool Robot::home(uint8_t joint_mask, float retract_angles[NUM_JOINTS]) {
   set_pose(pose_from_joint_angles());
 
   // enable servo loops if all joints are initialized
-  enable_servo_control(true);
+  bool restart_ok = enable_servo_control(true);
 
   // check if all joints are ready
   all_joints_ready = check_all_joints_ready();
 
-  return homing_successful;
+  return homing_successful && restart_ok;
 }
 
 bool Robot::calibrate_joint(int joint_idx, bool store_calibration, bool print_measurements) {
@@ -417,12 +439,12 @@ bool Robot::calibrate_joint(int joint_idx, bool store_calibration, bool print_me
   set_pose(pose_from_joint_angles());
 
   // enable servo loops if all joints are initialized
-  enable_servo_control(true);
+  bool restart_ok = enable_servo_control(true);
 
   // check if all joints are ready
   all_joints_ready = check_all_joints_ready();
 
-  return true;
+  return restart_ok;
 }
 
 //--- G-Code Commands -------------------------------------------------------------------
@@ -473,9 +495,10 @@ void Robot::process_machine_command(const GCodeCommand& cmd, std::string& reply)
     spin_unlock_unsafe(joints_spin_lock);
 
     // M18 can leave feedback paused. Resume only homed, calibrated, powered axes.
-    enable_servo_control(true);
+    bool restart_ok = enable_servo_control(true);
+    all_joints_ready = check_all_joints_ready();
 
-    reply = "ok\n";
+    reply = restart_ok ? "ok\n" : "error: servo restart refused; home or recalibrate affected axes\n";
     return;
   }
 
@@ -730,7 +753,9 @@ void Robot::process_set_servo_parameter_command(const GCodeCommand& cmd, std::st
 }
 
 void Robot::process_home_command(const GCodeCommand& cmd, std::string& reply) {
-  float retract_angles[NUM_JOINTS] = {-1.0f};
+  float retract_angles[NUM_JOINTS];
+  for(float& angle : retract_angles)
+    angle = HOMING_BACKOFF_ANGLE_DEG * Constants::DEG2RAD;
 
   // TODO: check parameter and build joint mask
   uint8_t joint_mask = 0;

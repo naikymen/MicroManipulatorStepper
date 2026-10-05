@@ -44,6 +44,10 @@ constexpr bool ENABLE_ENCODER_CRC = false;
 // field, still well below the original 50 rad/s setting.
 constexpr float HOMING_VELOCITY   = 0.2f;        // rad per s
 constexpr float HOMING_CURRENT    = 0.15f;       // range 0..1
+// G28 field rotation, expressed as mechanical motor degrees. The former
+// 1.8-degree command could finish outside the measured calibration range.
+// Calibration keeps its separate original backoff and measurement origin.
+constexpr float HOMING_BACKOFF_ANGLE_DEG = 3.6f;
 // NOT IMPLEMENTED YET: constexpr float HOMING_FINISH_POS = 0.5f;        // in rad
 
 //--- CALIBRATION -------------------------------------------------------------

@@ -107,3 +107,18 @@
   a bounded initial PID integral for retaining the held field. These changes
   address stale-history impulses and corrections accumulated while motors
   were off; current and PID output limits are unchanged.
+
+## Use the tested continuous-field homing handover in normal firmware
+
+- Enable held-field PID preload and calibration/phase preflight in the normal
+  `pico` environment, without diagnostic pauses or feedback cutoffs. Refused
+  restarts clear homed status and report failure rather than silently
+  accepting an invalid handover.
+- Slow the electrical backoff to 10 rad/s and default `G28` to a 3.6-degree
+  mechanical-equivalent field command. The former 1.8-degree command could
+  leave the rotor outside its calibration table, where its position was
+  reported as a fixed endpoint and restarting feedback caused a snap.
+- Keep calibration's separate measurement origin, saved data, PWM caps,
+  existing travel restrictions, and PID correction limits unchanged. All
+  three motors completed individual observed Home/hold checks without a
+  reported post-home snap on the normal firmware.

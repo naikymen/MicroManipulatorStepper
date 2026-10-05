@@ -171,6 +171,41 @@ Each move ramps the output up and down and finishes with the drivers disabled.
 See the [motor-test reference](../documentation/setup_guide/motor_step_test.md)
 for the configured duty limits and additional safety notes.
 
+### Normal homing and feedback handover
+
+The default `pico` environment enables `HOMING_BUMPLESS_SERVO_RESTART` and
+`HOMING_RESTART_GUARD`, but no diagnostic pauses, pulse cutoffs, phase traces,
+or calibration overrides. Feedback continues normally after Home.
+On restart, velocity history uses a fresh encoder reading and the velocity
+PID is seeded with the held field's offset from the calibrated reference.
+This avoids replacing the held field with a different one in a single update;
+the existing +/-81 electrical-degree correction limit is unchanged.
+
+`G28` now defaults to `HOMING_BACKOFF_ANGLE_DEG=3.6` in `src/hw_config.h`.
+This is a commanded field rotation expressed as mechanical motor degrees,
+not a guarantee of actual rotor movement. The previous 1.8-degree command
+could leave these motors outside the measured calibration range. Explicit
+values such as `G28 B1.8` still override the default. Calibration keeps its
+original separate backoff and measurement origin, so this change does not
+rewrite or shift saved tables.
+
+The restart preflight rejects out-of-calibration encoder readings, non-finite
+phase comparisons, or field mismatches exceeding 75 electrical degrees.
+A refusal pauses that axis's feedback, clears its homed status, and makes
+Home/enable/calibration completion report an error rather than silently
+claiming a successful handover. The held field remains powered; use `M18`
+to disable outputs. This check is not a physical travel-limit guarantee,
+and existing travel restrictions and PWM/current limits are unchanged.
+
+Unpowered axes are excluded from feedback restart in every environment.
+At zero driver amplitude, encoder tracking continues but both PID controllers
+and velocity history are reset, and the field command is not advanced. This
+prevents a disabled motor from accumulating an unseen correction that could
+be applied at its next power-up. `M18` pauses feedback before ramping all
+channels to zero and putting their shared enable line in standby. `M17`
+reasserts that enable line, ramps the channels, and resumes feedback only
+for homed, calibrated, powered axes. These changes do not raise current limits.
+
 ### Restore normal firmware
 
 Build and upload the default `pico` environment again:
