@@ -122,3 +122,18 @@
   existing travel restrictions, and PID correction limits unchanged. All
   three motors completed individual observed Home/hold checks without a
   reported post-home snap on the normal firmware.
+
+## Add optional staged and bounded homing diagnostics
+
+- Add separate PlatformIO environments to isolate backoff, current restoration,
+  field-reference disagreement, and feedback restart, including an open-loop
+  calibration comparison that only saves when explicitly requested with `S`.
+- Capture the first feedback command and bounded snapshots in memory on core 1,
+  freezing field updates after 50 ms, one second, or ten seconds, or a nominal
+  two-degree raw-encoder excursion. A core-0 fallback also pauses updates;
+  previous pulse records are cleared before each Home to avoid stale results.
+- Keep diagnostic pauses, traces, cutoffs, and calibration overrides disabled
+  in the normal environment. Document electrical versus mechanical units,
+  motor-disable commands, and why these diagnostics are not physical safety
+  limits. These modes made the observed snap reproducible and separable from
+  motor enable/current changes without logging in the active servo loop.

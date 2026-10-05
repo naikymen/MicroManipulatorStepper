@@ -84,6 +84,51 @@ class ServoController {
     // enable or disable encoder reads
     void set_encoder_update_enabled(bool enable);
 
+    #ifdef HOMING_SERVO_PULSE_TEST
+      #ifdef HOMING_SERVO_PULSE_US
+        static constexpr uint64_t restart_pulse_duration_us = HOMING_SERVO_PULSE_US;
+      #else
+        static constexpr uint64_t restart_pulse_duration_us = 50000;
+      #endif
+      static_assert(restart_pulse_duration_us >= 1000 && restart_pulse_duration_us <= 10000000,
+                    "Diagnostic servo pulse must be between 1 ms and 10 seconds");
+      static constexpr uint64_t restart_pulse_sample_interval_us =
+        restart_pulse_duration_us > 1000000 ? restart_pulse_duration_us / 10 : 100000;
+
+      struct RestartPulseDiagnostic {
+        struct Sample {
+          uint32_t elapsed_us = 0;
+          float raw_rotor_delta = 0;
+          float pos_error = 0;
+          float pid_output = 0;
+          float applied_field_delta = 0;
+        };
+        Sample samples[12]{};
+        uint32_t sample_count = 0;
+        bool captured = false;
+        bool stopped = false;
+        bool excursion_cutoff = false;
+        uint64_t start_us = 0;
+        uint32_t updates = 0;
+        int32_t raw_start = 0;
+        float target = 0;
+        float measured = 0;
+        float previous = 0;
+        float first_dt = 0;
+        float first_velocity = 0;
+        float held_field = 0;
+        float reference_field = 0;
+        float pid_output = 0;
+        float applied_field = 0;
+        float max_excursion = 0;
+      };
+      // Caller must hold the joint lock; core 1 writes this during the pulse.
+      const RestartPulseDiagnostic& get_restart_pulse_diagnostic() const {
+        return restart_pulse;
+      }
+      void clear_restart_pulse_diagnostic() { restart_pulse = RestartPulseDiagnostic{}; }
+    #endif
+
   public:
     float encoder_angle_to_motor_pos(int32_t encoder_angle_raw);
     float motor_pos_to_field_angle(float motor_pos);
@@ -109,4 +154,7 @@ class ServoController {
     float output = 0.0f;                  // servo loop output (field angle offset)
     bool motor_update_enabled = false;    // enables mootor field updates
     bool encoder_update_enabled = true;   // enables encoder reads
+    #ifdef HOMING_SERVO_PULSE_TEST
+      RestartPulseDiagnostic restart_pulse;
+    #endif
 };

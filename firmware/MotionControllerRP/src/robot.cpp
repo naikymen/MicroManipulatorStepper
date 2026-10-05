@@ -69,6 +69,25 @@ Robot::~Robot() {
 }
 
 void Robot::init() {
+  #if defined(HOMING_TRANSITION_TEST) || defined(HOMING_SERVO_PULSE_TEST)
+    LOG_INFO("Homing transition diagnostic enabled; no automatic motion");
+    #ifdef HOMING_TEST_SKIP_SERVO_RESTART
+      LOG_INFO("HOME TEST: servo restart will be skipped; motors stay powered after homing until M18");
+    #endif
+    #ifdef HOMING_SERVO_PULSE_TEST
+      LOG_INFO("HOME TEST: servo pulse <=%lu ms, encoder excursion cutoff 2 rotor degrees; final field stays powered",
+               (unsigned long)(ServoController::restart_pulse_duration_us/1000));
+    #endif
+    #ifdef HOMING_BUMPLESS_SERVO_RESTART
+      LOG_INFO("HOME TEST: held-field velocity PID preload enabled; existing limits unchanged");
+    #endif
+    #ifdef CALIBRATION_REFERENCE_TEST
+      LOG_INFO("CAL TEST: servo restart also skipped after M56; omit S to preserve saved calibration");
+    #endif
+    #ifdef HOMING_RESTART_GUARD
+      LOG_INFO("HOME GUARD: restart requires valid calibration input and field mismatch <=75 electrical degrees");
+    #endif
+  #endif
   // IDs 0-23 are reserved or shared by the Pico SDK. Claim exclusive locks
   // from its safe allocation range instead of colliding with SDK internals.
   shared_data.lock = spin_lock_init(spin_lock_claim_unused(true));
@@ -351,6 +370,10 @@ bool Robot::home(uint8_t joint_mask, float retract_angles[NUM_JOINTS]) {
   spin_lock_unsafe_blocking(joints_spin_lock);
 
   // initialize homing controllers
+  #ifdef HOMING_SERVO_PULSE_TEST
+    for(int i=0; i<NUM_JOINTS; i++)
+      joints[i]->servo_controller->clear_restart_pulse_diagnostic();
+  #endif
   for(int i=0; i<NUM_JOINTS; i++) {
     // only start requested joints
     if(((joint_mask>>i)&1) == 0) continue;
@@ -380,6 +403,9 @@ bool Robot::home(uint8_t joint_mask, float retract_angles[NUM_JOINTS]) {
     // only check requested joints
     if(((joint_mask>>i)&1) == 0) continue;
 
+    #ifdef HOMING_TRANSITION_TEST
+      LOG_INFO("HOME TEST: axis %i backoff begins", i+1);
+    #endif
     homing_controller[i].finalize();
 
     if(homing_controller[i].is_successful()) {
@@ -395,14 +421,93 @@ bool Robot::home(uint8_t joint_mask, float retract_angles[NUM_JOINTS]) {
     spin_unlock_unsafe(shared_data.lock);
   }
 
+  #ifdef HOMING_TRANSITION_TEST
+    LOG_INFO("HOME TEST: all backoffs and amplitude restores finished; feedback field updates remain paused for 2 seconds");
+    sleep_ms(2000);
+    for(int i=0; i<NUM_JOINTS; i++) {
+      auto* servo = joints[i]->servo_controller;
+      float raw = servo->get_encoder().read_abs_angle_raw();
+      float pos = servo->encoder_angle_to_motor_pos(raw);
+      float held_field = servo->get_motor_driver().get_field_angle();
+      float calibrated_field = servo->motor_pos_to_field_angle(pos);
+      float field_delta = remainderf(calibrated_field-held_field, Constants::TWO_PI_F);
+      LOG_INFO("HOME TEST: axis %i raw=%f enc_in_lut=%i pos_deg=%f amplitude=%f",
+               i+1, raw, int(servo->get_enc_to_pos_lut().in_input_range(raw)),
+               pos*Constants::RAD2DEG, servo->get_motor_driver().get_amplitude());
+      // Keep each line below the logger's 128-byte buffer limit.
+      LOG_INFO("HOME TEST: axis %i held_field_deg=%f calibrated_delta_deg=%f",
+               i+1, held_field*Constants::RAD2DEG, field_delta*Constants::RAD2DEG);
+    }
+  #endif
+
   // servo updates may continue here
   spin_unlock_unsafe(joints_spin_lock);
 
   // get pose from joint angles
   set_pose(pose_from_joint_angles());
 
+  #ifdef HOMING_TRANSITION_TEST
+    float targets[NUM_JOINTS];
+    spin_lock_unsafe_blocking(shared_data.lock);
+    for(int i=0; i<NUM_JOINTS; i++)
+      targets[i] = shared_data.joint_target_positions[i];
+    spin_unlock_unsafe(shared_data.lock);
+    spin_lock_unsafe_blocking(joints_spin_lock);
+    for(int i=0; i<NUM_JOINTS; i++) {
+      float measured = joints[i]->servo_controller->read_position();
+      LOG_INFO("HOME TEST: axis %i target_deg=%f measured_deg=%f error_deg=%f",
+               i+1, targets[i]*Constants::RAD2DEG, measured*Constants::RAD2DEG,
+               (targets[i]-measured)*Constants::RAD2DEG);
+    }
+    spin_unlock_unsafe(joints_spin_lock);
+    #ifdef HOMING_TEST_SKIP_SERVO_RESTART
+      LOG_INFO("HOME TEST: servo restart SKIPPED; motors stay powered at the held field until M18");
+    #else
+      LOG_INFO("HOME TEST: servo restart NOW (field update resumes)");
+    #endif
+  #endif
+
   // enable servo loops if all joints are initialized
-  bool restart_ok = enable_servo_control(true);
+  bool restart_ok = true;
+  #if !defined(HOMING_TRANSITION_TEST) || !defined(HOMING_TEST_SKIP_SERVO_RESTART)
+    restart_ok = enable_servo_control(true);
+  #endif
+
+  #ifdef HOMING_SERVO_PULSE_TEST
+    // Core 1 enforces its pulse cutoff independently of this wait and serial I/O.
+    sleep_ms((ServoController::restart_pulse_duration_us+999)/1000+50);
+    spin_lock_unsafe_blocking(joints_spin_lock);
+    for(int i=0; i<NUM_JOINTS; i++) {
+      auto* servo = joints[i]->servo_controller;
+      // Also freeze axes with no completed pulse (e.g. not ready or core 1 stalled).
+      servo->set_motor_update_enabled(false);
+      const auto& pulse = servo->get_restart_pulse_diagnostic();
+      LOG_INFO("HOME PULSE: axis %i captured=%i stopped=%i excursion_cutoff=%i updates=%lu",
+               i+1, int(pulse.captured), int(pulse.stopped), int(pulse.excursion_cutoff),
+               (unsigned long)pulse.updates);
+      if(!pulse.captured) continue;
+      LOG_INFO("HOME PULSE: axis %i target_deg=%f measured_deg=%f error_deg=%f",
+               i+1, pulse.target*Constants::RAD2DEG, pulse.measured*Constants::RAD2DEG,
+               (pulse.target-pulse.measured)*Constants::RAD2DEG);
+      LOG_INFO("HOME PULSE: axis %i previous_deg=%f dt_us=%f velocity_rad_s=%f",
+               i+1, pulse.previous*Constants::RAD2DEG, pulse.first_dt*1e6f, pulse.first_velocity);
+      LOG_INFO("HOME PULSE: axis %i reference_delta_deg=%f pid_deg=%f applied_delta_deg=%f",
+               i+1, remainderf(pulse.reference_field-pulse.held_field, Constants::TWO_PI_F)*Constants::RAD2DEG,
+               pulse.pid_output*Constants::RAD2DEG,
+               remainderf(pulse.applied_field-pulse.held_field, Constants::TWO_PI_F)*Constants::RAD2DEG);
+      LOG_INFO("HOME PULSE: axis %i max_rotor_excursion_deg=%f",
+               i+1, pulse.max_excursion*Constants::RAD2DEG);
+      for(uint32_t sample_idx=0; sample_idx<pulse.sample_count; sample_idx++) {
+        const auto& sample = pulse.samples[sample_idx];
+        LOG_INFO("HOME TRACE: a=%i ms=%lu rotor_d=%f err=%f pid=%f field_d=%f",
+                 i+1, (unsigned long)(sample.elapsed_us/1000),
+                 sample.raw_rotor_delta*Constants::RAD2DEG, sample.pos_error*Constants::RAD2DEG,
+                 sample.pid_output*Constants::RAD2DEG, sample.applied_field_delta*Constants::RAD2DEG);
+      }
+    }
+    spin_unlock_unsafe(joints_spin_lock);
+    LOG_INFO("HOME PULSE: feedback field updates paused; motors remain powered until M18");
+  #endif
 
   // check if all joints are ready
   all_joints_ready = check_all_joints_ready();
@@ -439,7 +544,14 @@ bool Robot::calibrate_joint(int joint_idx, bool store_calibration, bool print_me
   set_pose(pose_from_joint_angles());
 
   // enable servo loops if all joints are initialized
-  bool restart_ok = enable_servo_control(true);
+  bool restart_ok = true;
+  #ifdef CALIBRATION_REFERENCE_TEST
+    // A suspect saved phase reference must not be applied to any axis at the
+    // end of this measurement. Calibration itself already disabled feedback.
+    LOG_INFO("CAL TEST: servo restart SKIPPED; motors stay powered at the held field until M18");
+  #else
+    restart_ok = enable_servo_control(true);
+  #endif
 
   // check if all joints are ready
   all_joints_ready = check_all_joints_ready();

@@ -129,6 +129,11 @@ void HomingController::on_endstop_detected() {
 
   // the motor is currently held against the end stop by the field, defining a geometric reference
   home_encoder_angle = encoder.read_abs_angle();
+  #ifdef HOMING_PHASE_TRACE
+    // Capture only here: logging would delay the other axes still homing.
+    endstop_raw = encoder.get_last_abs_raw_angle();
+    endstop_field = motor_driver.get_field_angle();
+  #endif
   LOG_DEBUG("home_encoder_angle=%f deg", home_encoder_angle*Constants::RAD2DEG);
   if(home_encoder_angle < Constants::TWO_PI_F*0.01 || home_encoder_angle > Constants::TWO_PI_F*0.99)
     LOG_WARNING("encoder angle at home position close to wrap around point !");
@@ -137,6 +142,12 @@ void HomingController::on_endstop_detected() {
 void HomingController::finalize() {
    auto& motor_driver = servo_ctrl->get_motor_driver();
    float pole_pair_count = servo_ctrl->get_pole_pair_count();
+  #ifdef HOMING_PHASE_TRACE
+    // Robot logs the one-based axis immediately before this call.
+    log_phase_sample("endstop", endstop_raw, endstop_field);
+    log_phase_sample("before_backoff", servo_ctrl->get_encoder().read_abs_angle_raw(),
+                     motor_driver.get_field_angle());
+  #endif
  
   // back off from home position
   motor_driver.rotate_field(retract_field_angle * (field_velocity>0.0f ? -1.0f : 1.0f), 
@@ -145,9 +156,53 @@ void HomingController::finalize() {
                               servo_ctrl->get_encoder().read_abs_angle();
                             });
 
+  #ifdef HOMING_PHASE_TRACE
+    log_phase_sample("after_backoff", servo_ctrl->get_encoder().read_abs_angle_raw(),
+                     motor_driver.get_field_angle());
+  #endif
+
+  #ifdef HOMING_TRANSITION_TEST
+    LOG_INFO("HOME TEST: backoff finished; hold amplitude=%f for 1 second",
+             motor_driver.get_amplitude());
+    sleep_ms(1000);
+    float raw_before_restore = servo_ctrl->get_encoder().read_abs_angle_raw();
+    #ifdef HOMING_PHASE_TRACE
+      log_phase_sample("before_restore", int32_t(raw_before_restore), motor_driver.get_field_angle());
+    #endif
+    LOG_INFO("HOME TEST: restoring amplitude %f -> %f; raw_before=%f",
+             motor_driver.get_amplitude(), initial_current, raw_before_restore);
+  #endif
+
   // restore previous motor current
   motor_driver.set_amplitude_smooth(initial_current, 100);
+
+  #ifdef HOMING_TRANSITION_TEST
+    LOG_INFO("HOME TEST: amplitude restored; hold field unchanged for 1 second");
+    sleep_ms(1000);
+    float raw_after_restore = servo_ctrl->get_encoder().read_abs_angle_raw();
+    #ifdef HOMING_PHASE_TRACE
+      log_phase_sample("after_restore", int32_t(raw_after_restore), motor_driver.get_field_angle());
+    #endif
+    LOG_INFO("HOME TEST: raw_after=%f, raw_change_during_restore=%f",
+             raw_after_restore, raw_after_restore - raw_before_restore);
+  #endif
 }
+
+#ifdef HOMING_PHASE_TRACE
+void HomingController::log_phase_sample(const char* stage, int32_t raw, float field) {
+  float pos = servo_ctrl->encoder_angle_to_motor_pos(raw);
+  float calibrated_field = servo_ctrl->motor_pos_to_field_angle(pos);
+  float enc_min, enc_max;
+  servo_ctrl->get_enc_to_pos_lut().get_intput_range(enc_min, enc_max);
+  // Separate short lines keep all values within the logger's 128-byte buffer.
+  LOG_INFO("HOME PHASE: %s raw=%li in_lut=%i pos_deg=%f", stage, (long)raw,
+           int(servo_ctrl->get_enc_to_pos_lut().in_input_range(raw)), pos*Constants::RAD2DEG);
+  LOG_INFO("HOME PHASE: %s field_deg=%f reference_deg=%f mismatch_deg=%f", stage,
+           field*Constants::RAD2DEG, calibrated_field*Constants::RAD2DEG,
+           remainderf(calibrated_field-field, Constants::TWO_PI_F)*Constants::RAD2DEG);
+  LOG_INFO("HOME PHASE: enc_lut_min=%f enc_lut_max=%f", enc_min, enc_max);
+}
+#endif
 
 bool HomingController::is_finished() const {
   return state == State::Done;
@@ -160,5 +215,3 @@ bool HomingController::is_successful() const {
 float HomingController::get_home_encoder_angle() const {
   return home_encoder_angle;
 }
-
-

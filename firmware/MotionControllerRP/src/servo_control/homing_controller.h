@@ -59,6 +59,11 @@ class HomingController {
   private:
     void on_endstop_detected();
     float compute_eval_pos_delta(float pos, float field_angle_delta);
+    #ifdef HOMING_PHASE_TRACE
+      void log_phase_sample(const char* stage, int32_t raw, float field);
+      int32_t endstop_raw = 0;
+      float endstop_field = 0.0f;
+    #endif
 
   private:
     enum class State {

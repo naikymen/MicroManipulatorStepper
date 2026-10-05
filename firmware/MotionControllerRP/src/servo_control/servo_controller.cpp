@@ -115,7 +115,52 @@ void ServoController::update(float target_motor_pos, float dt, float one_over_dt
   // set new field direction
   // motor_driver.set_amplitude(std::clamp(abs(output*10.0f), 0.1f, 0.5f), false);
   if(motor_update_enabled) {
-    motor_driver.set_field_angle(field_angle + output);
+    #ifdef HOMING_SERVO_PULSE_TEST
+      // Capture in memory only: serial logging here would disturb core 1 timing.
+      uint64_t now_us = time_us_64();
+      if(!restart_pulse.captured) {
+        restart_pulse.captured = true;
+        restart_pulse.start_us = now_us;
+        restart_pulse.raw_start = encoder_angle_raw;
+        restart_pulse.target = target_motor_pos;
+        restart_pulse.measured = motor_pos;
+        restart_pulse.previous = motor_pos_prev;
+        restart_pulse.first_dt = dt;
+        restart_pulse.first_velocity = velocity;
+        restart_pulse.held_field = motor_driver.get_field_angle();
+        restart_pulse.reference_field = field_angle;
+        restart_pulse.pid_output = output;
+        restart_pulse.applied_field = field_angle + output;
+      }
+      float raw_rotor_delta = float(int64_t(encoder_angle_raw)-restart_pulse.raw_start) *
+                              (Constants::TWO_PI_F / float(encoder.get_rawcounts_per_rev())) *
+                              ENCODER_ANGLE_TO_ROTOR_ANGLE;
+      restart_pulse.max_excursion = std::max(restart_pulse.max_excursion, fabsf(raw_rotor_delta));
+      restart_pulse.excursion_cutoff = fabsf(raw_rotor_delta) >= 2.0f*Constants::DEG2RAD;
+      if(now_us-restart_pulse.start_us >= restart_pulse_duration_us || restart_pulse.excursion_cutoff) {
+        motor_update_enabled = false;
+        restart_pulse.stopped = true;
+      }
+      if(motor_update_enabled) {
+        motor_driver.set_field_angle(field_angle + output);
+        restart_pulse.updates++;
+      }
+      // Spread snapshots over the bounded window and reserve room for cutoff.
+      uint32_t elapsed_us = uint32_t(now_us-restart_pulse.start_us);
+      if(restart_pulse.sample_count < 12 &&
+         (restart_pulse.sample_count == 0 || !motor_update_enabled ||
+          elapsed_us-restart_pulse.samples[restart_pulse.sample_count-1].elapsed_us >= restart_pulse_sample_interval_us)) {
+        auto& sample = restart_pulse.samples[restart_pulse.sample_count++];
+        sample.elapsed_us = elapsed_us;
+        sample.raw_rotor_delta = raw_rotor_delta;
+        sample.pos_error = pos_error;
+        sample.pid_output = output;
+        sample.applied_field_delta = remainderf(motor_driver.get_field_angle() -
+                                                restart_pulse.held_field, Constants::TWO_PI_F);
+      }
+    #else
+      motor_driver.set_field_angle(field_angle + output);
+    #endif
   } 
 
   // store values for next update
@@ -239,6 +284,9 @@ void ServoController::set_motor_update_enabled(bool enable) {
     // Open-loop homing may have moved the motor while servo updates were blocked.
     // Start velocity estimation from a fresh encoder position, not the old cache.
     motor_pos = read_position();
+    #ifdef HOMING_SERVO_PULSE_TEST
+      restart_pulse = RestartPulseDiagnostic{};
+    #endif
   }
   pos_controller.reset();
   #ifdef HOMING_BUMPLESS_SERVO_RESTART
