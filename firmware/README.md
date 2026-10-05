@@ -339,6 +339,16 @@ for homed, calibrated, powered axes. These changes do not raise current limits.
 Each diagnostic Home clears previous pulse records, so an unpowered or
 guard-refused axis reports `captured=0` rather than an old test's results.
 
+Host-only regression checks (no device access) can be run with
+`bash firmware/MotionControllerRP/test/run_host_servo_restart.sh` from the
+repository root. They compile the actual servo update/restart methods and
+PID implementation against mock encoder/driver/time objects, checking
+zero-amplitude field retention, fresh velocity history, bounded PID preload,
+phase wrapping, duration/excursion cutoffs, diagnostic snapshot timing,
+preflight refusal, and readiness invalidation.
+These tests require `g++`; they do not verify real encoder reliability or
+physical travel limits.
+
 Pulse diagnostics also capture `HOME TRACE` snapshots at roughly 100 ms
 intervals (one second in the ten-second environment) and at cutoff.
 `a` is the one-based motor position, `ms` is elapsed

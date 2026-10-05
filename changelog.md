@@ -137,3 +137,23 @@
   motor-disable commands, and why these diagnostics are not physical safety
   limits. These modes made the observed snap reproducible and separable from
   motor enable/current changes without logging in the active servo loop.
+
+## Add host regression checks for servo restart and record live validation
+
+- Add a device-free runner that compiles the actual servo update/restart,
+  PID, and restart-preflight methods against encoder, driver, and clock mocks.
+  Check disabled-field retention, fresh history, bounded preload, phase
+  wrapping, pulse expiration/excursion cutoff, snapshot timing, and explicit
+  refusal/readiness invalidation, including baseline comparison builds.
+- Document the runner and its hardware limitations so future changes can
+  repeat these checks without moving the mechanism. Both production-fix
+  staged snapshots and all eleven final normal/homing build environments
+  compiled successfully.
+- Live normal-firmware validation used fresh Home before each first X/Y/Z
+  move: 0.1 mm out and back at 0.1 mm/s, with motors continuously powered.
+  Encoder-derived motor increments matched the kinematic predictions; return
+  errors were below 0.001 motor degree. All three individual Home/20-second
+  hold observations reported no post-backoff snap or twitch. These are sampled
+  encoder checks and user observations, not independent stage metrology or
+  proof against intermittent faults. Saved calibration entries were also
+  verified after normal firmware was flashed.
