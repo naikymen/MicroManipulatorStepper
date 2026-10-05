@@ -85,3 +85,13 @@
   be built and flashed with one explicit PlatformIO command.
 - Update the firmware and setup documentation with the new environment-based
   build, upload, monitoring, and normal-firmware restoration workflow.
+
+## Update the GUI for clean terminal interruption
+
+- Advance the GUI submodule to include Ctrl+C handling: a Qt timer dispatches
+  SIGINT requests through window cleanup, and serial disconnection is ensured
+  when the event loop exits.
+- This allows the GUI to stop cleanly from its launching terminal even while
+  idle; verified in an offscreen Qt run with mocked hardware.
+- The updated reference also includes the previously committed incremental
+  jog-limit fix (`57bbae6`), which avoids jumps back to the allowed boundary.
