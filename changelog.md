@@ -1,13 +1,12 @@
 # Changelog
 
-## Record the homing and motion-safety workplan
+## Explain the normal homing flow
 
-- Add implementation and repository-state records for measured Home clearance,
-  exact Cartesian command handling, zero-motion dwell semantics, validation
-  results, and later hardware checks.
-- Record that hidden FK failure, stale calibration lifecycle flags, and queued
-  path retention across `M18` are pre-existing follow-up defects rather than
-  silently expanding the completed firmware commit.
+- Replace temporary implementation and working-tree records with one durable,
+  plain-language description of a normal `G28` move.
+- Explain stop detection, encoder-measured backoff, settling, the shared final
+  snapshot, calibrated electrical-phase checks, feedback handover, failure
+  behavior, and the software limits established by a successful Home.
 
 ## Update the GUI submodule for rejected commands
 

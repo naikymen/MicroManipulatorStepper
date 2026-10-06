@@ -137,7 +137,8 @@ This update improves calibration, homing, logging, and adds several new G-Code c
 - **Logging**: clearer and more detailed output  
 
 ### New G-Code Commands
-- `G28` — Home joints (supports homing multiple axis simultanously for faster startup)
+- `G28` — Home joints (supports homing multiple axes simultaneously; see the
+  [normal homing flow](documentation/firmware/homing_flow.md))
 - `G24` — Set pose command (directly sets servo targets, bypassing motion controller)  
 - `M17/M18` — Enable/Disable motors (with pose recovery from encoders on enable)  
 - `M51` — Read encoder values  
@@ -212,7 +213,7 @@ The client must wait for an acknowledgment from the previous command before send
 | `G1 X Y Z F`   | Same as `G0`.                                                              |
 | `G4 S/P`       | Dwell/pause for a specified time. <br>• `S`: seconds <br>• `P`: milliseconds |
 | `G24 X Y Z A B C` | Directly set current pose for servo loops with optional rotation vector* `A`, `B`, `C`. |
-| `G28 A-F`      | Home one or more joints. <br>• Optional joint selection `A`–`F`.           |
+| `G28 A-F`      | Home one or more joints. <br>• Optional joint selection `A`–`F` <br>• [Normal homing flow](documentation/firmware/homing_flow.md) |
 | `M3`           | Set Tool output. <br>• `T`: tool index <br>• `S`: output value (0.0..1.0) <br> Note: new values is only applied on the next motion or dwell command         |
 | `M17`          | Enable motors and read current pose as the start pose.                     |
 | `M18`          | Disable motors.                                                            |
@@ -240,4 +241,3 @@ If you'd like to support this project, consider the following:
 ## Youtube Video
 [![Watch the video](images/video-thumbnails/01_MicroManipulator.jpg)](https://youtu.be/MgQbPdiuUTw)
 [![Better Ball Joints for the Open Micro-Manipulator](images/video-thumbnails/02_BetterBallJoints.jpg)](https://youtu.be/MgQbPdiuUTw)
-

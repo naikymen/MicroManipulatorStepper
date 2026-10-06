@@ -237,60 +237,15 @@ for the configured duty limits and additional safety notes.
 
 ### Normal homing and feedback handover
 
-The default `pico` environment enables `HOMING_BUMPLESS_SERVO_RESTART`,
-`HOMING_RESTART_GUARD` and `HOMING_ENCODER_BACKOFF`, but no diagnostic pauses, pulse cutoffs, phase traces,
-or calibration overrides. Feedback continues normally after Home.
-On restart, velocity history uses a fresh encoder reading and the velocity
-PID is seeded with the held field's offset from the calibrated reference.
-This avoids replacing the held field with a different one in a single update;
-the existing +/-81 electrical-degree correction limit is unchanged.
+The default `pico` firmware finds the mechanical stop from encoder stall,
+backs away by encoder-confirmed movement, validates the saved calibration and
+electrical phase, then starts feedback from one final measured position. The
+complete sequence, failure behavior, and resulting travel limits are explained
+in [How a normal homing move works](../documentation/firmware/homing_flow.md).
 
-Normal `G28` requests `HOMING_MEASURED_BACKOFF_ANGLE_DEG=1.5` degrees of
-encoder-measured shaft-equivalent clearance from the detected stop, using the
-configured magnet geometry. It rotates the field slowly until BOTH that
-clearance and the calibrated lookup-table intersection are reached. The
-calibration zero is after its own backoff, not the physical stop, so entering
-the calibrated interval can require slightly more than the requested clearance.
-
-Actual clearance is capped at 3.6 shaft-equivalent degrees. Field advance is
-limited to the requested clearance times pole-pair count plus one electrical
-revolution, with a separate 3-second timeout. Status/CRC errors (when CRC is
-enabled), wrong-direction movement, missing movement, or failure to settle
-refuse homing. The field is held for a 100-ms stability window, with a 0.02-degree
-tolerance and 1-second settling timeout, both before and after amplitude
-restoration. Explicit `G28 B1.8` requests measured clearance; requests above the
-3.6-degree cap are rejected before searching that axis.
-
-After all backoffs/restorations, a final encoder snapshot is taken under the
-joint lock. Targets, zero target velocities, PID/velocity history and Cartesian
-FK use that same snapshot; no IK round trip rewrites the joint targets. The
-servo core acquires the joint lock before copying targets, preventing a target
-copied before Home from being applied after the handover.
-
-That same snapshot establishes each joint's Home travel reference. The
-home-side limit retains 25% of the measured clearance and exposes the remaining
-75% to normal motion; the opposite side retains its fixed 0.5-degree calibrated
-margin. A 0.0001-degree comparison tolerance absorbs floating-point noise only.
-If the reference cannot be established, normal Cartesian commands fail visibly
-rather than falling back to a shorter move.
-
-Calibration's `run_blocking()` path, fixed 90-electrical-degree backoff,
-measurement origin, fitting, saving and file format remain unchanged. Legacy
-diagnostic environments without `HOMING_ENCODER_BACKOFF` keep their existing
-fixed-field `HOMING_BACKOFF_ANGLE_DEG=3.6` G28 backoff. All paths now terminate
-on search-range failure rather than repeatedly finalizing without exiting.
-
-The restart preflight rejects out-of-calibration encoder readings, non-finite
-phase comparisons, or field mismatches exceeding 75 electrical degrees.
-The measured path also checks the dynamic Home-referenced travel interval and
-encoder status at the final snapshot. It does not force phase alignment, offset tables,
-recalibrate, or widen the guard to hide a disagreement. If a large mismatch
-persists after verified backoff, Home reports failure for further diagnosis.
-A refusal pauses that axis's feedback, clears its homed status, and makes
-Home/enable/calibration completion report an error rather than silently
-claiming a successful handover. The held field remains powered; use `M18`
-to disable outputs. This check is not a physical travel-limit guarantee,
-and existing travel restrictions and PWM/current limits are unchanged.
+Calibration remains a separate operation with its own measurement origin,
+backoff, fitting, and optional persistence. Normal Home uses those saved tables
+but does not modify them.
 
 Offline regressions (no device access):
 
