@@ -1,5 +1,14 @@
 # Changelog
 
+## Record the homing and motion-safety workplan
+
+- Add implementation and repository-state records for measured Home clearance,
+  exact Cartesian command handling, zero-motion dwell semantics, validation
+  results, and later hardware checks.
+- Record that hidden FK failure, stale calibration lifecycle flags, and queued
+  path retention across `M18` are pre-existing follow-up defects rather than
+  silently expanding the completed firmware commit.
+
 ## Update the GUI submodule for rejected commands
 
 - Advance `software/OpenMicroManipulatorGUI` from `56a4dce` to `112c096` so
