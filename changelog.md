@@ -1,5 +1,15 @@
 # Changelog
 
+## Update the GUI submodule for rejected commands
+
+- Advance `software/OpenMicroManipulatorGUI` from `56a4dce` to `112c096` so
+  jog, realtime, and Home failures remain visible and rejected targets do not
+  advance the GUI's cached position.
+- Preserve exact jog semantics: each click sends the selected displacement once
+  and never retries, subdivides, or silently shortens a rejected request.
+- Include seven mocked Qt/API regressions and the matching GUI documentation;
+  these checks do not open a camera, serial port, or hardware connection.
+
 ## Configure a persistent PlatformIO serial device
 
 - Configure upload and serial monitoring to use the controller's stable Linux
