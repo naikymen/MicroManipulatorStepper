@@ -28,9 +28,17 @@ void PathPlanner::set_kinematic_model(IKinematicModel* kinematic_model) {
 }
 
 bool PathPlanner::add_cartesian_path_segment(const CartesianPathSegment& path_segment) {
+  if(limit_fault) {
+    rejection_reason = "motion limit fault; home before moving";
+    return false;
+  }
+  if(path_segment.joint_motion &&
+     !cartesian_path_within_limits(*kinematic_model, path_segment, joint_limits, &rejection_reason))
+    return false;
   auto* new_segment = ct_path_segment_queue.push(path_segment);
   if(new_segment == nullptr) {
     // queue full
+    rejection_reason = "path queue full";
     return false;
   }
 
@@ -38,6 +46,7 @@ bool PathPlanner::add_cartesian_path_segment(const CartesianPathSegment& path_se
 }
 
 void PathPlanner::process(bool disable_interrupts_for_queue_update) {
+  if(limit_fault) return;
   // create new segment generator for next cartesian path segment
   // the segment stays in the queue until it is completed
   if(segment_generator == nullptr && ct_path_segment_queue.empty() == false) {
@@ -67,6 +76,20 @@ void PathPlanner::process(bool disable_interrupts_for_queue_update) {
     JointSpacePathSegment segment;
     bool end_reached = segment_generator->generate_next(segment);
 
+    // Joint segments interpolate linearly, so valid endpoints bound every
+    // commanded position between them. Never enqueue a partial/invalid IK result.
+    bool finite_endpoints = true;
+    for(int i=0; i<NUM_JOINTS; ++i)
+      finite_endpoints &= std::isfinite(segment.start_pos[i]) &&
+                          std::isfinite(segment.end_pos[i]);
+    if(!segment.is_initialized() || !finite_endpoints ||
+       (segment.requires_joint_limits() &&
+        (!joint_limits.contains(segment.start_pos) ||
+         !joint_limits.contains(segment.end_pos)))) {
+      abort();
+      return;
+    }
+
     // update output queue
     if(disable_interrupts_for_queue_update) {
       uint32_t status = save_and_disable_interrupts();
@@ -89,6 +112,14 @@ void PathPlanner::process(bool disable_interrupts_for_queue_update) {
       segment_generator = nullptr;
     }
   }
+}
+
+void PathPlanner::reset() {
+  while(ct_path_segment_queue.pop()) {}
+  while(js_path_segment_queue.pop()) {}
+  delete segment_generator;
+  segment_generator = nullptr;
+  limit_fault = false;
 }
 
 /**
@@ -218,4 +249,3 @@ void PathPlanner::print_cartesian_path_segments() {
       s->start_velocity.linear, s->end_velocity.linear);
   }
 }
-

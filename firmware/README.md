@@ -37,6 +37,70 @@ and then starts the second-core servo loop. Calibration tables are stored as
 `jointN_enc_to_pos_lut.dat` and `jointN_pos_to_field_lut.dat`; an `M56` command
 only persists new tables when its save option is supplied.
 
+## Cartesian motion limits
+
+Normal `G0`/`G1` moves and realtime `G24` targets require all joints to be homed
+and calibrated, even when the legacy `JOINT_READY_OVERRIDE` define is present.
+Each joint's usable motor-angle interval is the intersection of its encoder-LUT
+output range, field-LUT input range, and `0..CALIBRATION_RANGE`. A successful
+normal Home records the final joint position, the encoder-measured clearance
+from the physical stop, and the direction away from that stop. Normal motion
+may use `HOMING_USABLE_CLEARANCE_FRACTION` (default 75%) of that specific
+clearance; the remaining 25% is kept as a physical reserve. The opposite,
+unmeasured end retains `JOINT_OPPOSITE_TRAVEL_MARGIN_DEG` (default 0.5 degrees).
+Calibration invalidates this Home reference, so a normal measured Home is
+required before Cartesian motion resumes.
+
+The firmware rejects the whole command if inverse kinematics fails, produces
+non-finite angles, or demands an out-of-range joint. Rejection does not change
+the accepted Cartesian target, feedrate, or any joint target. `G0`/`G1` paths
+are preflighted at no more than 0.01 mm translation / 0.001 rad rotation spacing,
+including both endpoints; paths requiring more than 4096 intervals are rejected.
+Sampling is not a mathematical proof of continuous Cartesian reachability:
+every generated joint segment is checked again before execution. Since these
+segments use linear joint interpolation, their checked endpoints bound the
+entire commanded segment. The interrupt also checks targets before publication.
+An unexpected execution-time violation holds all axes at the last published
+targets and latches a fault; Home clears pending paths and permits recovery.
+`JOINT_LIMIT_NUMERIC_TOLERANCE_DEG` (default 0.0001 degrees) applies only to
+boundary comparisons. It does not clamp a target, shorten a path, or change the
+requested Cartesian endpoint.
+
+`G24` returns `busy` while a planned path is queued or still executing, preventing
+the two command sources from overwriting each other's targets. Homing,
+calibration and measured-pose synchronization retain their internal procedures
+and are not restricted by the normal-motion margin.
+
+`G4` is a planner-ordered dwell, not a motion command. It validates its duration
+and retains the joint endpoint already accepted by the planner without invoking
+inverse kinematics or joint-limit checks during the wait. It therefore remains
+available before Home while `G0`, `G1`, and `G24` retain their fail-closed
+readiness and travel checks. Tool outputs keep their existing queued timing in
+normal operation. If a motion fault has stopped the planner, only an explicit
+zero-valued tool command is applied immediately; a nonzero output is rejected
+and not retained for later application after recovery.
+
+These are calibrated **command limits**, not independent physical limit switches
+or a tracking/encoder-fault watchdog. Bad calibration, incorrect geometry or a
+mechanical stop inside the calibrated interval can still cause a collision.
+`M50` reports the last accepted target, not a measured Cartesian position.
+`M53` reports completion only after the last active joint segment finishes,
+not merely when the planner queues become empty.
+
+Offline regressions (no hardware access):
+
+```bash
+bash firmware/MotionControllerRP/test/run_host_motion_limits.sh
+bash firmware/MotionControllerRP/test/run_host_servo_restart.sh
+```
+
+Current code-only validation covers measured Home, dynamic limit derivation,
+the actual motion-command handlers, servo restart, calibration-reference
+behavior, and mocked GUI/API rejection handling. The captured post-Home geometry
+accepts exact 1 mm inward X, Y, and Z commands. Homed range enforcement still
+requires live validation; the current fix has not been uploaded while hardware
+is unavailable.
+
 ## Source layout
 
 | Path | Responsibility |
@@ -173,29 +237,129 @@ for the configured duty limits and additional safety notes.
 
 ### Normal homing and feedback handover
 
-The default `pico` environment enables `HOMING_BUMPLESS_SERVO_RESTART` and
-`HOMING_RESTART_GUARD`, but no diagnostic pauses, pulse cutoffs, phase traces,
+The default `pico` environment enables `HOMING_BUMPLESS_SERVO_RESTART`,
+`HOMING_RESTART_GUARD` and `HOMING_ENCODER_BACKOFF`, but no diagnostic pauses, pulse cutoffs, phase traces,
 or calibration overrides. Feedback continues normally after Home.
 On restart, velocity history uses a fresh encoder reading and the velocity
 PID is seeded with the held field's offset from the calibrated reference.
 This avoids replacing the held field with a different one in a single update;
 the existing +/-81 electrical-degree correction limit is unchanged.
 
-`G28` now defaults to `HOMING_BACKOFF_ANGLE_DEG=3.6` in `src/hw_config.h`.
-This is a commanded field rotation expressed as mechanical motor degrees,
-not a guarantee of actual rotor movement. The previous 1.8-degree command
-could leave these motors outside the measured calibration range. Explicit
-values such as `G28 B1.8` still override the default. Calibration keeps its
-original separate backoff and measurement origin, so this change does not
-rewrite or shift saved tables.
+Normal `G28` requests `HOMING_MEASURED_BACKOFF_ANGLE_DEG=1.5` degrees of
+encoder-measured shaft-equivalent clearance from the detected stop, using the
+configured magnet geometry. It rotates the field slowly until BOTH that
+clearance and the calibrated lookup-table intersection are reached. The
+calibration zero is after its own backoff, not the physical stop, so entering
+the calibrated interval can require slightly more than the requested clearance.
+
+Actual clearance is capped at 3.6 shaft-equivalent degrees. Field advance is
+limited to the requested clearance times pole-pair count plus one electrical
+revolution, with a separate 3-second timeout. Status/CRC errors (when CRC is
+enabled), wrong-direction movement, missing movement, or failure to settle
+refuse homing. The field is held for a 100-ms stability window, with a 0.02-degree
+tolerance and 1-second settling timeout, both before and after amplitude
+restoration. Explicit `G28 B1.8` requests measured clearance; requests above the
+3.6-degree cap are rejected before searching that axis.
+
+After all backoffs/restorations, a final encoder snapshot is taken under the
+joint lock. Targets, zero target velocities, PID/velocity history and Cartesian
+FK use that same snapshot; no IK round trip rewrites the joint targets. The
+servo core acquires the joint lock before copying targets, preventing a target
+copied before Home from being applied after the handover.
+
+That same snapshot establishes each joint's Home travel reference. The
+home-side limit retains 25% of the measured clearance and exposes the remaining
+75% to normal motion; the opposite side retains its fixed 0.5-degree calibrated
+margin. A 0.0001-degree comparison tolerance absorbs floating-point noise only.
+If the reference cannot be established, normal Cartesian commands fail visibly
+rather than falling back to a shorter move.
+
+Calibration's `run_blocking()` path, fixed 90-electrical-degree backoff,
+measurement origin, fitting, saving and file format remain unchanged. Legacy
+diagnostic environments without `HOMING_ENCODER_BACKOFF` keep their existing
+fixed-field `HOMING_BACKOFF_ANGLE_DEG=3.6` G28 backoff. All paths now terminate
+on search-range failure rather than repeatedly finalizing without exiting.
 
 The restart preflight rejects out-of-calibration encoder readings, non-finite
 phase comparisons, or field mismatches exceeding 75 electrical degrees.
+The measured path also checks the dynamic Home-referenced travel interval and
+encoder status at the final snapshot. It does not force phase alignment, offset tables,
+recalibrate, or widen the guard to hide a disagreement. If a large mismatch
+persists after verified backoff, Home reports failure for further diagnosis.
 A refusal pauses that axis's feedback, clears its homed status, and makes
 Home/enable/calibration completion report an error rather than silently
 claiming a successful handover. The held field remains powered; use `M18`
 to disable outputs. This check is not a physical travel-limit guarantee,
 and existing travel restrictions and PWM/current limits are unchanged.
+
+Offline regressions (no device access):
+
+```sh
+bash firmware/MotionControllerRP/test/run_host_measured_homing.sh
+bash firmware/MotionControllerRP/test/run_host_servo_restart.sh
+bash firmware/MotionControllerRP/test/run_host_motion_limits.sh
+```
+
+### Guarded homing phase trace (normal timing)
+
+`homing_guard_trace_test` inherits the normal `pico` handover and restart guard,
+adding only `HOMING_PHASE_TRACE`. It labels each axis and records its encoder
+position, held electrical field and calibrated reference at the detected stop,
+before/after backoff, and after amplitude restoration. It adds no deliberate
+pauses, bounded servo pulses, calibration override or automatic movement. Build
+and flash with `pio run -e homing_guard_trace_test -t upload`; send `G28` only
+when ready to observe homing. Restore normal firmware with `pio run -e pico -t upload`.
+
+`HOME GUARD ... mismatch_deg` is an **electrical** phase disagreement, not a
+mechanical travel angle. An in-range encoder can still have an invalid phase
+reference. A refused restart leaves the affected joint unhomed, so Home returns
+an error and normal Cartesian moves are blocked. Do not raise the guard threshold
+to mask the error: the existing velocity-PID correction is limited to 81
+electrical degrees. This trace distinguishes backoff, current restoration and
+calibration-reference disagreement before choosing a correction.
+
+`M57` now also reports one-based axis diagnostics: measured motor/target angles,
+PWM amplitude, encoder-LUT membership, held/reference electrical field angles
+with their wrapped mismatch, measured Home clearance, estimated stop, and the
+active dynamic travel interval. These are read-only snapshots; they do not
+re-enable an axis or change a calibration. Motion rejections identify the
+offending joint, angle, allowed interval and path fraction (0 means the starting
+pose failed).
+
+`calibration_guard_reference_test` extends this normal-timing trace with
+`CALIBRATION_REFERENCE_TEST`: calibration finishes with feedback still paused,
+but subsequent Home retains the normal bumpless restart and 75-degree guard.
+Flash with `pio run -e calibration_guard_reference_test -t upload`. For motor 3,
+`M56 J2 P` homes, sweeps through the configured 83-degree calibration range and
+back, and replaces only its RAM tables. **Do not add `S`**: the saved tables
+must remain unchanged for this comparison. After inspecting the calibration
+result, a separate `G28 C` tests the fresh reference with the same default
+backoff and current settings. No commands run automatically on boot. Rebooting
+restores the saved tables; do not save the experimental fit or use it for normal
+jogging until its homing/restart behavior has been verified.
+
+`homing_backoff_power_test` changes only the amplitude-restoration order: search
+still uses `HOMING_CURRENT`, but the previous amplitude is restored at the stop,
+with the field held fixed, before the slow backoff. The PWM cap is unchanged.
+Only `G28` selects the earlier restoration; `M56` keeps the existing calibration
+procedure so its changed measurement cannot confound this timing comparison.
+It inherits the RAM-calibration comparison and normal Home guard; it neither
+runs commands automatically nor saves tables without `S`. Phase rows therefore
+show `before_restore`/`after_restore` before `before_backoff`/`after_backoff`.
+Flash with `pio run -e homing_backoff_power_test -t upload`. The flag is absent
+from normal firmware; it is an investigation of low-amplitude backoff, not an
+established fix. Do not combine it with the staged transition-test flag.
+
+In the motor-2 investigation, early restoration did **not** resolve the restart
+failure: two Homes were refused at about 84 and 151 electrical degrees. Two
+fresh calibrations also differed by about 102 electrical degrees at matching
+encoder counts, despite low individual fitting errors. Do not promote this
+timing change or save a fit merely because its RMS error is small. Check the
+rotor-to-motor-shaft connection described in the
+[setup checklist](../documentation/setup_guide/setup_guide.md), and investigate
+encoder/driver faults if that connection is sound. These observations suggest
+a shifting mechanical/electrical reference; they do not prove which component
+is responsible.
 
 ### Homing transition test
 
@@ -345,7 +509,11 @@ repository root. They compile the actual servo update/restart methods and
 PID implementation against mock encoder/driver/time objects, checking
 zero-amplitude field retention, fresh velocity history, bounded PID preload,
 phase wrapping, duration/excursion cutoffs, diagnostic snapshot timing,
-preflight refusal, and readiness invalidation.
+preflight refusal, readiness invalidation, and selected-axis calibration with
+explicit-only saving and diagnostic feedback-restart suppression.
+They also check normal versus optional early amplitude-restoration order using
+the actual homing finalization method, including unchanged backoff and phase
+snapshot order.
 These tests require `g++`; they do not verify real encoder reliability or
 physical travel limits.
 

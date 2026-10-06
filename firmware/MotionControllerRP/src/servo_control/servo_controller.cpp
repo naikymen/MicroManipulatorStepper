@@ -279,11 +279,11 @@ void ServoController::set_motor_enabled(bool enable, bool synchronize_field_angl
 }
 
 // enable or disable servo loop update and encoder reads
-void ServoController::set_motor_update_enabled(bool enable) {
+void ServoController::set_motor_update_enabled(bool enable, const float* measured_position) {
   if(enable) {
     // Open-loop homing may have moved the motor while servo updates were blocked.
     // Start velocity estimation from a fresh encoder position, not the old cache.
-    motor_pos = read_position();
+    motor_pos = measured_position ? *measured_position : read_position();
     #ifdef HOMING_SERVO_PULSE_TEST
       restart_pulse = RestartPulseDiagnostic{};
     #endif

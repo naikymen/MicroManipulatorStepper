@@ -25,6 +25,14 @@
 class Robot;
 class RobotJoint;
 class IRobotTool;
+class HomingController;
+
+struct JointHomeReference {
+  bool valid = false;
+  float final_position = 0.0f;
+  float measured_clearance = 0.0f;
+  float away_from_stop_sign = 0.0f;
+};
 
 //--- SharedData ------------------------------------------------------------------------
 
@@ -62,7 +70,8 @@ class Robot : public ICommandProcessor {
     void update_path_planner();              // called from main loop
     void update_servo_controllers(float dt); // called from seperate cpu-core
 
-    void set_pose(const Pose6DF& pos);
+    // Only internal measured-pose synchronization bypasses travel-margin checks.
+    bool set_pose(const Pose6DF& pos, bool enforce_travel_limits = true);
     Pose6DF pose_from_joint_angles();
   
     CommandParser* get_command_parser();
@@ -86,6 +95,18 @@ class Robot : public ICommandProcessor {
     static bool update_motion_controller_isr(repeating_timer_t* timer); // called from update timer
 
   private:
+    bool calculate_joint_travel_limit(int joint_idx,
+                                      const JointHomeReference& home,
+                                      float& lower, float& upper) const;
+    bool update_travel_limits();
+    void reset_motion_path();
+    // Caller holds joints_spin_lock. Publish/start from one final home snapshot.
+    bool finish_homing_handover(bool enable_feedback,
+                                HomingController homing_controllers[NUM_JOINTS],
+                                uint8_t joint_mask);
+    JointHomeReference joint_home_references[NUM_JOINTS];
+    JointTravelLimits joint_limits;
+    std::string last_pose_error;
     ERobotState state;
     uint32_t path_buffering_time_us;
     uint64_t path_buffering_start_time;
@@ -100,6 +121,9 @@ class Robot : public ICommandProcessor {
     CommandParser command_parser;
 
     Pose6DF current_pose;
+    // Joint endpoint corresponding to current_pose (the end of the accepted
+    // planner queue, not necessarily the target currently being executed).
+    float planned_joint_positions[NUM_JOINTS];
     float current_tool_outputs[NUM_TOOLS];
     LinearAngular max_acceleration;
     LinearAngular current_feedrate;

@@ -9,6 +9,13 @@ the robot, motion planner, or servo loop, and does not write calibration data.
 It uses a 1 MHz SPI clock to reduce signal-integrity effects while diagnosing
 physical connections.
 
+To check communication at the normal robot's **8 MHz** SPI clock instead, use
+the optional `encoder_spi8m_test` environment. It has the same disabled motors,
+channel/status/CRC/ID checks and output; only the SPI clock differs. Passing the
+1 MHz test alone does not establish reliable 8 MHz communication. Conversely,
+this standalone test does not reproduce the normal servo loop's polling rate,
+concurrent timing or powered-motor interference.
+
 ## Enable and Flash
 
 Build and flash the dedicated diagnostic environment from the firmware
@@ -18,6 +25,10 @@ directory. No source-file edit is required:
 cd firmware/MotionControllerRP
 ~/.platformio/penv/bin/pio run --environment encoder_wiggle_test --target upload
 ```
+
+For the operating-clock comparison, replace `encoder_wiggle_test` with
+`encoder_spi8m_test` in that command. The banner prints the actual selected
+clock. Neither environment changes saved calibrations or runs motor motion.
 
 Open the live serial monitor:
 

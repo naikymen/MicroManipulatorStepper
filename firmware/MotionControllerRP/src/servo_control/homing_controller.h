@@ -41,13 +41,17 @@ class HomingController {
                       
     // Starts a non blocking homing cycle, motor_velocity can be negative and defines the homing direction.
     // WARNING: Servo loop updates (including encoder reads) must be completely disabled during homing.
-    // Note: same parameter as 'run_blocking()' 
+    // Same parameters as run_blocking; the final opt-in diagnostic parameter
+    // restores amplitude before backoff. The last parameter selects verified
+    // encoder backoff for G28; run_blocking/calibration retain the original path.
     void start(ServoController* servo_controller, 
                float motor_velocity, 
                float search_range, 
                float current,
                float encoder_angle_to_motor_angle,
-               float retract_angle_rad=-1.0f);
+               float retract_angle_rad=-1.0f,
+               bool restore_amplitude_before_backoff=false,
+               bool measured_backoff=false);
 
     void update();
     void finalize();
@@ -55,9 +59,16 @@ class HomingController {
     bool is_finished() const;
     bool is_successful() const;
     float get_home_encoder_angle() const;
+    // Re-evaluate clearance from the physical stop at a caller-supplied encoder
+    // snapshot. This lets handover targets and travel limits use the same read.
+    bool get_measured_clearance_at_raw(int32_t raw, float& clearance,
+                                       float& away_from_stop_sign) const;
 
   private:
     void on_endstop_detected();
+    bool backoff_to_measured_clearance();
+    bool read_backoff_position(float& clearance, float& position, bool& in_range);
+    bool settle_backoff();
     float compute_eval_pos_delta(float pos, float field_angle_delta);
     #ifdef HOMING_PHASE_TRACE
       void log_phase_sample(const char* stage, int32_t raw, float field);
@@ -70,7 +81,8 @@ class HomingController {
       Idle,
       Initializing,
       Homing,
-      Done
+      Done,
+      Failed
     };
 
     ServoController* servo_ctrl;
@@ -80,6 +92,16 @@ class HomingController {
     float field_angle_search_range = 0.0f;
     float homing_current = 0.0f;
     float initial_current = 0.0f;
+    bool restore_before_backoff = false;
+    bool use_measured_backoff = false;
+    bool finalized = false;
+    float encoder_to_motor_angle = 0.0f;
+    float requested_clearance = 0.0f;
+    float encoder_backoff_direction = 0.0f;
+    float away_from_stop_sign = 0.0f;
+    float trusted_position_min = 0.0f;
+    float trusted_position_max = 0.0f;
+    int32_t home_raw = 0;
     float retract_field_angle = 0.0f;
     float retract_field_velocity = 0.0f;
 

@@ -73,7 +73,8 @@ class CartesianPathSegment {
 
     CartesianPathSegment(const Pose6DF& pose, 
                          const float tool_outputs[NUM_TOOLS],
-                         float dwell_time);
+                         float dwell_time,
+                         const float joint_positions[NUM_JOINTS]);
 
     void evaluate(float time, Pose6DF& pose) const;
     float get_duration() const;
@@ -97,6 +98,10 @@ class CartesianPathSegment {
 
     float dwell_time;  // stay at start position for given duration if dwell_time > 0
     float tool_outputs[NUM_TOOLS];
+    // Dwell segments carry the already-planned joint endpoint and never request
+    // IK, joint movement, or travel-limit publication.
+    bool joint_motion = true;
+    float fixed_joint_positions[NUM_JOINTS]{};
 };
 
 //--- JointSpacePathSegment -------------------------------------------------------------
@@ -108,7 +113,8 @@ class JointSpacePathSegment {
     JointSpacePathSegment(const float start_pos[NUM_JOINTS],
                           const float end_pos[NUM_JOINTS],
                           const float tool_outputs[NUM_TOOLS],
-                          const float duration);
+                          const float duration,
+                          bool enforce_joint_limits = true);
 
     void evaluate(float time, 
                   float joint_positions[NUM_JOINTS], 
@@ -118,6 +124,7 @@ class JointSpacePathSegment {
     float get_duration();
 
     bool is_initialized();
+    bool requires_joint_limits() const { return enforce_joint_limits; }
 
   public:
     bool initialized;
@@ -129,6 +136,7 @@ class JointSpacePathSegment {
 
     float duration;
     float inv_duration;
+    bool enforce_joint_limits = true;
 };
 
 //--- JointSpacePathSegmentGenerator ----------------------------------------------------
@@ -155,4 +163,3 @@ class JointSpacePathSegmentGenerator {
     const CartesianPathSegment* path_segment = nullptr;
     IKinematicModel* kinematic_model;
 };
-

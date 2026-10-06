@@ -1,10 +1,14 @@
 #pragma once
+#include <cstdint>
 #include "utilities/math_constants.h"
 
 // Optional standalone diagnostics are selected through the encoder_wiggle_test
 // and motor_step_test environments in platformio.ini; no source edit is needed.
 #if defined(ENCODER_WIGGLE_TEST) && defined(MOTOR_STEP_TEST)
   #error "Select only one firmware diagnostic environment"
+#endif
+#if defined(HOMING_ENCODER_BACKOFF) && (!defined(HOMING_BUMPLESS_SERVO_RESTART) || !defined(HOMING_RESTART_GUARD))
+  #error "Measured G28 requires continuous-field restart and its phase guard"
 #endif
 
 // #define DEMO_MODE
@@ -48,12 +52,30 @@ constexpr float HOMING_CURRENT    = 0.15f;       // range 0..1
 // 1.8-degree command could finish outside the measured calibration range.
 // Calibration keeps its separate original backoff and measurement origin.
 constexpr float HOMING_BACKOFF_ANGLE_DEG = 3.6f;
+// G28's verified path requests measured shaft-equivalent clearance, then
+// continues only as far as needed to enter both calibrated lookup domains.
+// Calibration and legacy diagnostic images retain their fixed-field backoff.
+constexpr float HOMING_MEASURED_BACKOFF_ANGLE_DEG = 1.5f;
+constexpr float HOMING_BACKOFF_MAX_CLEARANCE_DEG = 3.6f;
+constexpr uint32_t HOMING_BACKOFF_TIMEOUT_MS = 3000;
+constexpr uint32_t HOMING_BACKOFF_SETTLE_MS = 100;
+constexpr uint32_t HOMING_BACKOFF_SETTLE_TIMEOUT_MS = 1000;
+constexpr float HOMING_BACKOFF_SETTLE_TOLERANCE_DEG = 0.02f;
+// Normal motion may use this fraction of the clearance measured by G28. The
+// remainder stays between a commanded target and the detected physical stop.
+constexpr float HOMING_USABLE_CLEARANCE_FRACTION = 0.75f;
 // NOT IMPLEMENTED YET: constexpr float HOMING_FINISH_POS = 0.5f;        // in rad
 
 //--- CALIBRATION -------------------------------------------------------------
 
 // degrees from home position
 constexpr float CALIBRATION_RANGE = 83; 
+
+// The physical Home side uses the measured G28 clearance above. The other side
+// has no measured stop reference and retains a fixed calibration-domain margin.
+constexpr float JOINT_OPPOSITE_TRAVEL_MARGIN_DEG = 0.5f;
+// Comparison tolerance only: accepted Cartesian/joint targets are not clamped.
+constexpr float JOINT_LIMIT_NUMERIC_TOLERANCE_DEG = 0.0001f;
 
 // velocity of the magnetic field during calibration (lower is more accurate)
 constexpr float CALIBRATION_FIELD_VELOCITY = 10.0f;

@@ -10,6 +10,136 @@
 - Include seven mocked Qt/API regressions and the matching GUI documentation;
   these checks do not open a camera, serial port, or hardware connection.
 
+## Derive motion limits from measured Home clearance
+
+- Increase normal encoder-verified G28 clearance from 0.5 to 1.5 mechanical
+  degrees. Retain 25 percent of each joint's actual measured clearance from the
+  detected physical stop and permit exact Cartesian paths to use the remaining
+  75 percent. Keep the opposite, unmeasured calibration boundary inset by 0.5
+  degrees and never extrapolate outside either calibration table.
+- Store the stop reference from the same final encoder snapshot used for target,
+  FK and servo-history handover. Invalidate it on calibration or failed Home;
+  normal Cartesian motion requires a subsequent successful measured Home.
+- Add a 0.0001-degree range-comparison tolerance for floating-point kinematics.
+  Accepted joint and Cartesian targets are not clamped or shortened. The GUI
+  still sends the selected displacement once and visibly reports whole-command
+  rejection.
+- Extend M57 with measured clearance, estimated stop and active joint limits.
+  Add host coverage for exact 1 mm inward X/Y/Z moves from the captured Home
+  geometry, retained clearance, boundary tolerance, invalid Home references and
+  a single exact GUI request with no retry. Calibration measurement, fitting,
+  persistence and file format remain unchanged.
+- Keep `G4` as a planner-ordered, zero-motion dwell. It captures the joint
+  endpoint already accepted by the planner, bypasses Cartesian IK and travel
+  enforcement during the wait, and remains available before Home without
+  weakening the `G0`/`G1`/`G24` readiness checks.
+- Preserve queued timing for normal tool changes, while allowing an explicit
+  zero output to reach the tool immediately after a latched planner fault.
+  Nonzero outputs are rejected and not retained while the queue is stopped. Add host regressions for
+  pre-Home dwell, fixed targets, limit bypass, and faulted tool behavior.
+
+## Verify G28 backoff and restart from one measured position snapshot
+
+- Add normal-firmware encoder-verified backoff: request 1.5 degrees of measured
+  shaft-equivalent clearance, remain inside both calibration domains, and cap
+  physical-equivalent travel at 3.6 degrees. Bound
+  field advance/time and reject wrong-direction movement, encoder errors and
+  unsettled positions, including after amplitude restoration. This addresses
+  the fact that a fixed field rotation after stall does not certify rotor travel.
+- Start targets and controller history from one final encoder snapshot, retain
+  the held field through bounded PID preload, and derive Cartesian pose with
+  FK only. Take the joint lock before the servo core copies targets: the old
+  order could apply a pre-Home target after a freshly initialized handover.
+- Keep calibration measurement/backoff/origin, saved table format, PWM limits
+  and the 75-electrical-degree phase guard unchanged. Persistent
+  disagreement remains an explicit failure; no table offset or forced field
+  alignment conceals it. Search timeout is terminal and finalization is once-only.
+- Exercise actual production methods with host clock/driver/encoder stand-ins
+  for stall-phase delays, wrap, missing/reversed/faulty/noisy readings, current
+  restoration displacement, timeout, calibration-path preservation, exact
+  snapshot reuse, phase refusal and joint/target lock ordering. These are offline
+  checks, not evidence that the reported device failure is resolved.
+
+## Check encoders at the normal SPI clock
+
+- Add optional `encoder_spi8m_test`, reusing the motor-disabled encoder
+  diagnostic with the robot's 8 MHz SPI clock. Keep the original wiring test
+  at 1 MHz and leave normal firmware unchanged.
+- Document that a low-speed wiring test cannot validate operating-speed
+  communication, and that the standalone test does not reproduce servo-loop
+  polling/concurrency or interference from energized motors.
+
+## Isolate reduced-power homing backoff
+
+- Add optional `homing_backoff_power_test`, restoring the previous amplitude
+  while the field is held at the stop, before backoff rather than afterward.
+  Search current, amplitude cap, guards and backoff speed/distance are unchanged;
+  normal firmware and the calibration procedure retain their existing order.
+- A fresh motor-2 RAM calibration passed its first guarded Home but a repeat
+  failed at roughly 84 electrical degrees. This test distinguishes a
+  reduced-amplitude backoff problem from simply outdated saved tables; no
+  experimental calibration is saved or guard threshold raised.
+- Test the actual finalization method against host driver mocks to verify
+  one restoration ramp, correct trace order and unchanged default backoff.
+- Live motor-2 Homes still failed at about 84 and 151 electrical degrees;
+  leave this change diagnostic-only. Successive fresh fits differed by about
+  102 electrical degrees at matching encoder counts, so investigate a shifting
+  reference (including the rotor-to-shaft fastening) rather than saving fits
+  or widening the guard. The exact physical cause remains unconfirmed.
+
+## Compare a temporary calibration against the saved phase reference
+
+- Add optional `calibration_guard_reference_test`, combining the existing
+  normal-timing phase trace and restart guard with feedback paused at the end
+  of calibration. This isolates a fresh RAM calibration without applying a
+  suspect saved reference or changing production settings.
+- Document the separate motor-3 calibration and Home commands, omission of `S`
+  to preserve flash, and reboot recovery. The previous doubled-backoff test
+  remained smooth but still reported about 91 electrical degrees of mismatch,
+  versus about 93 at the default backoff; simply increasing backoff did not
+  resolve the reference disagreement.
+- Extend host regressions using the actual calibration-completion method to
+  check selected-axis isolation, explicit-only saving, diagnostic restart
+  suppression, and normal restart-refusal propagation.
+- Motor 3's temporary fit enabled two guarded Homes at about 3-degree mismatch.
+  Motor 2's temporary fit passed once then failed a repeat at about 84 degrees;
+  recalibration alone is not established as a reliable correction.
+
+## Expose failed homing and specific motion rejections
+
+- Check Home's reply in the GUI, report failures and retain the prior cache on
+  failure. Physical stop detection/backoff is not sufficient when the firmware
+  subsequently refuses feedback restart; silently ignoring that error hid why
+  all Cartesian jogs were blocked.
+- Report the offending joint, motor-angle interval and path fraction for motion
+  rejection, and add read-only phase/current/target snapshots to `M57`.
+- Add `homing_guard_trace_test`, which inherits normal guards/current/timing and
+  records phases around backoff and amplitude restoration without diagnostic
+  pauses or automatic motion. Keep the 75-degree restart guard, PID limits,
+  current settings and saved calibrations unchanged while investigating the
+  repeated roughly 93-degree electrical mismatch on axis 3.
+- Initialize shared target arrays before the first servo update/diagnostic and
+  extend offline regressions for failure messages and GUI Home failure handling.
+
+## Enforce calibrated joint travel for Cartesian commands
+
+- Validate `G0`/`G1` paths and `G24` targets against the intersection of each
+  joint's two calibration domains and the configured sweep, with 0.5-degree
+  endpoint clearance. Reject failed/non-finite IK and unready joints rather than
+  allowing a physically stopped motor to leave the other motors moving.
+- Preflight path interiors and check every generated linear joint segment and
+  published target. Latch unexpected execution faults without sending partial
+  joint updates; Home clears the queued trajectory for recovery.
+- Leave rejected commands' pose/feedrate unchanged and prevent realtime targets
+  from racing an executing planned path. Preserve homing/calibration procedures,
+  motor current and normal jog speeds.
+- In the GUI submodule, refresh jog targets, preserve the last accepted target
+  on rejection, display controller errors, and stop rejected realtime control.
+  These changes avoid stale/unreachable GUI targets; they do not diagnose the
+  reported button-versus-mouse Y behavior or add an encoder watchdog.
+- Add offline actual-kinematics, command-handler and Qt regressions, documenting
+  that calibrated command limits are not a physical-limit guarantee.
+
 ## Configure a persistent PlatformIO serial device
 
 - Configure upload and serial monitoring to use the controller's stable Linux

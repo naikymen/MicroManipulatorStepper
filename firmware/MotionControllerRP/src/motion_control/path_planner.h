@@ -10,6 +10,7 @@
 //*** INCLUDE ***************************************************************************
 
 #include "path_segment.h"
+#include "motion_limits.h"
 #include "utilities/ringbuffer.h"
 
 //*** CLASS *****************************************************************************
@@ -32,6 +33,13 @@ class PathPlanner {
 
     // adds a new cartesian space path segment to the planner queue
     bool add_cartesian_path_segment(const CartesianPathSegment& path_segment);
+    void set_joint_limits(const JointTravelLimits& limits) { joint_limits = limits; }
+    bool joint_positions_allowed(const float* positions) const { return joint_limits.contains(positions); }
+    bool has_fault() const { return limit_fault; }
+    const std::string& get_rejection_reason() const { return rejection_reason; }
+    void abort() { limit_fault = true; }
+    // Caller must exclude the motion-controller interrupt.
+    void reset();
 
     // runs look ahead path planning. call this everytime after one or more cartesian
     // path segments have been added
@@ -71,5 +79,7 @@ class PathPlanner {
     JointSpacePathSegmentGenerator* segment_generator = nullptr;
     float segment_time_step;
     LinearAngular junction_deviation;
+    JointTravelLimits joint_limits;
+    volatile bool limit_fault = false;
+    std::string rejection_reason;
 };
-

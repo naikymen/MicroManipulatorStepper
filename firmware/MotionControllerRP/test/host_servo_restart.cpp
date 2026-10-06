@@ -12,7 +12,8 @@ uint64_t clock_us = 1000;
 uint64_t time_us_64() { return clock_us; }
 struct Encoder {
   int32_t raw = 1000;
-  int32_t read_abs_angle_raw() { return raw; }
+  unsigned reads = 0;
+  int32_t read_abs_angle_raw() { reads++; return raw; }
   uint32_t get_rawcounts_per_rev() { return 2097152; }
 };
 struct Driver {
@@ -62,9 +63,24 @@ public:
   float motor_pos_to_field_angle(float pos) { return pos*50; }
   float read_position() { return encoder_angle_to_motor_pos(encoder.read_abs_angle_raw()); }
   void update(float target_motor_pos, float dt, float one_over_dt);
-  void set_motor_update_enabled(bool enable);
+  void set_motor_update_enabled(bool enable, const float* measured_position=nullptr);
 };
 int main() {
+  {
+    ServoController snapshot;
+    float measured = .015f;
+    snapshot.motor_driver.field = snapshot.motor_pos_to_field_angle(measured) - .2f;
+    snapshot.set_motor_update_enabled(true, &measured);
+    assert(snapshot.encoder.reads == 0);
+    assert(snapshot.motor_pos == measured && snapshot.motor_pos_prev == measured);
+    snapshot.encoder.raw = 15000;
+    snapshot.update(measured, .0001f, 10000);
+    assert(snapshot.restart_pulse.first_velocity == 0);
+    #ifdef HOMING_BUMPLESS_SERVO_RESTART
+    assert(fabsf(snapshot.motor_driver.field - (.75f-.2f)) < 1e-6f);
+    #endif
+    puts("PASS: supplied home snapshot initializes PID/history without a second encoder read.");
+  }
   {
     ServoController off;
     off.motor_driver.amplitude = 0;

@@ -6,6 +6,7 @@
 // --------------------------------------------------------------------------------------
 
 #include "path_segment.h"
+#include "motion_limits.h"
 #include "utilities/logging.h"
 #include "kinematic_models/kinematic_model_base.h"
 
@@ -112,6 +113,7 @@ float MotionProfileConstAcc::evaluate(float time) const {
 
 CartesianPathSegment::CartesianPathSegment() {
   dwell_time = 0.0f;
+  joint_motion = true;
   for(int i=0; i<NUM_TOOLS; i++)
     tool_outputs[i] = 0.0f;
 }
@@ -123,6 +125,7 @@ CartesianPathSegment::CartesianPathSegment(const Pose6DF& start_pose,
                                            const float tool_outputs[NUM_TOOLS])
 {
   CartesianPathSegment::dwell_time = 0.0f;
+  CartesianPathSegment::joint_motion = true;
   CartesianPathSegment::start_pose = start_pose;
   CartesianPathSegment::end_pose = end_pose;
 
@@ -150,9 +153,11 @@ CartesianPathSegment::CartesianPathSegment(const Pose6DF& start_pose,
 
 CartesianPathSegment::CartesianPathSegment(const Pose6DF& pose,
                                            const float tool_outputs[NUM_TOOLS], 
-                                           float dwell_time)
+                                           float dwell_time,
+                                           const float joint_positions[NUM_JOINTS])
 {
   CartesianPathSegment::dwell_time = dwell_time;
+  CartesianPathSegment::joint_motion = false;
   CartesianPathSegment::start_pose = pose;
   CartesianPathSegment::end_pose = pose;
 
@@ -166,6 +171,8 @@ CartesianPathSegment::CartesianPathSegment(const Pose6DF& pose,
 
   for(int i=0; i<NUM_TOOLS; i++)
     CartesianPathSegment::tool_outputs[i] = tool_outputs[i];
+  for(int i=0; i<NUM_JOINTS; i++)
+    fixed_joint_positions[i] = joint_positions[i];
 }
 
 
@@ -220,7 +227,8 @@ JointSpacePathSegment::JointSpacePathSegment(
   const float start_pos[NUM_JOINTS],
   const float end_pos[NUM_JOINTS],
   const float tool_outputs[NUM_TOOLS],
-  float duration)
+  float duration,
+  bool enforce_joint_limits)
 {
   JointSpacePathSegment::duration = duration;
   JointSpacePathSegment::inv_duration = 1.0f/std::max(duration, 1e-7f);
@@ -235,6 +243,7 @@ JointSpacePathSegment::JointSpacePathSegment(
   }
 
   initialized = true;
+  JointSpacePathSegment::enforce_joint_limits = enforce_joint_limits;
 }
 
 void JointSpacePathSegment::evaluate(
@@ -287,8 +296,13 @@ JointSpacePathSegmentGenerator::JointSpacePathSegmentGenerator(
     error_trap("Fatal Error");
   }
 
-  // evaluate inverse kinematic model to et start joint positions
-  kinematic_model->inverse(path_segment->start_pose, current_joint_pos);
+  // A dwell holds the endpoint already accepted by the command layer. It must
+  // not run IK or manufacture a new joint target merely to wait/apply tools.
+  if(path_segment->joint_motion)
+    checked_inverse(*kinematic_model, path_segment->start_pose, current_joint_pos);
+  else
+    for(int i=0; i<NUM_JOINTS; ++i)
+      current_joint_pos[i] = path_segment->fixed_joint_positions[i];
 }
 
 bool JointSpacePathSegmentGenerator::generate_next(JointSpacePathSegment& js_path_segment) {
@@ -305,21 +319,30 @@ bool JointSpacePathSegmentGenerator::generate_next(JointSpacePathSegment& js_pat
     current_time = end_time;  // snap to 1.0
   }
 
-  // evaluate path to get new end position
-  Pose6DF seg_end_pose;
-  path_segment->evaluate(current_time, seg_end_pose);
-  // LOG_INFO(">pos_x [mm]: %f", seg_end_pose.translation.x);
-
-  // evaluate inverse kinematic model here
   float next_joint_pos[NUM_JOINTS];
-  kinematic_model->inverse(seg_end_pose, next_joint_pos);
+  if(path_segment->joint_motion) {
+    // evaluate path to get new end position
+    Pose6DF seg_end_pose;
+    path_segment->evaluate(current_time, seg_end_pose);
+    // LOG_INFO(">pos_x [mm]: %f", seg_end_pose.translation.x);
+
+    // evaluate inverse kinematic model here
+    if(!checked_inverse(*kinematic_model, seg_end_pose, next_joint_pos)) {
+      js_path_segment = JointSpacePathSegment();
+      return true; // planner latches a fault instead of publishing partial targets
+    }
+  } else {
+    for(int i=0; i<NUM_JOINTS; ++i)
+      next_joint_pos[i] = current_joint_pos[i];
+  }
   
   // create joint space path segment
   float duration = current_time-initial_time;
   js_path_segment = JointSpacePathSegment(current_joint_pos, 
                                           next_joint_pos,
                                           path_segment->tool_outputs,
-                                          duration);
+                                          duration,
+                                          path_segment->joint_motion);
 
   // update current joint pos
   for(int i=0; i<NUM_JOINTS; i++)

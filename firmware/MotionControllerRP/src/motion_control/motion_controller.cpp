@@ -21,7 +21,9 @@ MotionController::MotionController(PathPlanner* path_planner) {
 bool MotionController::update(float dt, 
                               float* joint_positions,
                               float* joint_velocities,
-                              float* tool_outputs) {
+                              float* tool_outputs,
+                              bool* enforce_joint_limits) {
+  if(path_planner->has_fault()) return false;
   // increment time counter
   current_time += dt;
 
@@ -53,5 +55,7 @@ bool MotionController::update(float dt,
 
   // evaluate path segment
   current_path_segment.evaluate(current_time, joint_positions, joint_velocities, tool_outputs);
+  if(enforce_joint_limits != nullptr)
+    *enforce_joint_limits = current_path_segment.requires_joint_limits();
   return true;
 }

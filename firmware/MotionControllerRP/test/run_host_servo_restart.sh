@@ -35,3 +35,29 @@ for mode in baseline guarded; do
   printf '%s restart preflight\n' "$mode"
   "$test_tmp/servo_check"
 done
+for mode in normal early_restore; do
+  extra_flags=()
+  if [[ "$mode" == early_restore ]]; then
+    extra_flags+=(-DHOMING_RESTORE_BEFORE_BACKOFF_TEST)
+  fi
+  {
+    sed -n '1,/^int main()/p' "$test_root/test/host_homing_current_order.cpp" | sed '$d'
+    sed -n '/^void HomingController::finalize()/,/^}/p' "$test_root/src/servo_control/homing_controller.cpp"
+    sed -n '/^int main()/,$p' "$test_root/test/host_homing_current_order.cpp"
+  } | g++ -std=c++17 "${extra_flags[@]}" -I "$test_root/src" -x c++ - -o "$test_tmp/servo_check"
+  printf '%s homing backoff order\n' "$mode"
+  "$test_tmp/servo_check"
+done
+for mode in normal ram_reference; do
+  extra_flags=()
+  if [[ "$mode" == ram_reference ]]; then
+    extra_flags+=(-DCALIBRATION_REFERENCE_TEST)
+  fi
+  {
+    sed -n '1,/^int main()/p' "$test_root/test/host_calibration_reference.cpp" | sed '$d'
+    sed -n '/^bool Robot::calibrate_joint(/,/^}/p' "$test_root/src/robot.cpp"
+    sed -n '/^int main()/,$p' "$test_root/test/host_calibration_reference.cpp"
+  } | g++ -std=c++17 "${extra_flags[@]}" -x c++ - -o "$test_tmp/servo_check"
+  printf '%s calibration completion\n' "$mode"
+  "$test_tmp/servo_check"
+done

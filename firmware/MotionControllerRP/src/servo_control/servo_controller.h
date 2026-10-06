@@ -79,7 +79,9 @@ class ServoController {
     void set_motor_enabled(bool enable, bool synchronize_field_angle);
 
     // enable or disable motor updates
-    void set_motor_update_enabled(bool enable);
+    // Optional measured position lets homing preflight, target publication and
+    // PID/history initialization use exactly the same encoder sample.
+    void set_motor_update_enabled(bool enable, const float* measured_position=nullptr);
 
     // enable or disable encoder reads
     void set_encoder_update_enabled(bool enable);

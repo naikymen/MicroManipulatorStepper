@@ -7,6 +7,7 @@
 
 #include <LittleFS.h> 
 #include <cmath>
+#include <algorithm>
 #include "robot.h"
 #include "hw_config.h"
 #include "utilities/logging.h"
@@ -55,6 +56,12 @@ Robot::Robot(float path_segment_time_step) :
     robot_tools[i] = nullptr;
 
   state = ERobotState::IDLE;
+  all_joints_ready = false;
+  for(int i=0; i<NUM_JOINTS; ++i) {
+    shared_data.joint_target_positions[i] = 0.0f;
+    shared_data.joint_target_velocities[i] = 0.0f;
+    planned_joint_positions[i] = 0.0f;
+  }
 }
 
 Robot::~Robot() {
@@ -177,6 +184,12 @@ void Robot::update_command_parser() {
  * segments for the motion controller.
  */
 void Robot::update_path_planner() {
+  if(path_planner.has_fault()) {
+    if(state != ERobotState::ERROR)
+      LOG_ERROR("Motion limit fault: holding all axes; home before moving again");
+    state = ERobotState::ERROR;
+    return;
+  }
   // check if buffering starts
   uint64_t time = time_us_64();
   if(state == ERobotState::IDLE && path_planner.input_queue_size() > 0) {
@@ -219,7 +232,24 @@ bool Robot::update_motion_controller_isr(repeating_timer_t* timer) {
   robot->last_mc_update_time = time_us;
 
   // get current joint position/velocity and tool outputs
-  bool update_ok = robot->motion_controller.update(dt, joint_positions, joint_velocities, tool_outputs);
+  bool enforce_joint_limits = true;
+  bool update_ok = robot->motion_controller.update(
+    dt, joint_positions, joint_velocities, tool_outputs, &enforce_joint_limits);
+
+  // Reject the whole target, never just the one offending joint.
+  if(update_ok && enforce_joint_limits &&
+     !robot->path_planner.joint_positions_allowed(joint_positions)) {
+    robot->path_planner.abort();
+    update_ok = false;
+  }
+  if(robot->path_planner.has_fault()) {
+    // Never block in the ISR: it may have interrupted the lock's owner.
+    if(spin_try_lock_unsafe(robot->shared_data.lock)) {
+      for(int i=0; i<NUM_JOINTS; ++i) robot->shared_data.joint_target_velocities[i] = 0.0f;
+      spin_unlock_unsafe(robot->shared_data.lock);
+    }
+    update_ok = false;
+  }
 
   // Attempt to acquire spinlock non-blocking and set new target data for the servo loops
   if (update_ok && spin_try_lock_unsafe(robot->shared_data.lock)) {
@@ -252,6 +282,9 @@ bool Robot::update_motion_controller_isr(repeating_timer_t* timer) {
 void Robot::update_servo_controllers(float dt) {
   float one_over_dt = 1.0f/dt;
 
+  // Take the joint lock BEFORE copying targets. Otherwise this core can copy
+  // stale targets, wait through Home, then apply them to freshly restarted PIDs.
+  spin_lock_unsafe_blocking(joints_spin_lock);
   // update axis target position and velocity from shared data
   spin_lock_unsafe_blocking(shared_data.lock);
   for(int i=0; i<3; i++) {
@@ -261,7 +294,6 @@ void Robot::update_servo_controllers(float dt) {
   spin_unlock_unsafe(shared_data.lock);
 
   // update servo loop for each axis
-  spin_lock_unsafe_blocking(joints_spin_lock);
   for(int i=0; i<NUM_JOINTS; i++) {
     joints[i]->update(dt, one_over_dt);
   }
@@ -308,10 +340,91 @@ bool Robot::enable_servo_control(bool enable) {
   return restart_ok;
 }
 
-void Robot::set_pose(const Pose6DF& pose) {
+bool Robot::calculate_joint_travel_limit(int i,
+                                         const JointHomeReference& home,
+                                         float& lower, float& upper) const {
+  auto* joint = joints[i];
+  if(!joint->is_homed || !joint->is_calibrated || !home.valid ||
+     !std::isfinite(home.final_position) ||
+     !std::isfinite(home.measured_clearance) || home.measured_clearance <= 0.0f ||
+     !std::isfinite(home.away_from_stop_sign) ||
+     fabsf(home.away_from_stop_sign) != 1.0f ||
+     !std::isfinite(HOMING_USABLE_CLEARANCE_FRACTION) ||
+     HOMING_USABLE_CLEARANCE_FRACTION < 0.0f ||
+     HOMING_USABLE_CLEARANCE_FRACTION >= 1.0f)
+    return false;
+
+  const auto& encoder = joint->servo_controller->get_enc_to_pos_lut();
+  const auto& field = joint->servo_controller->get_pos_to_field_lut();
+  if(encoder.size() < 2 || field.size() < 2 || !encoder.is_monotonic()) return false;
+  for(uint32_t j=0; j<encoder.size(); ++j)
+    if(!std::isfinite(encoder.get_entry(j))) return false;
+  for(uint32_t j=0; j<field.size(); ++j)
+    if(!std::isfinite(field.get_entry(j))) return false;
+
+  float field_min, field_max;
+  field.get_intput_range(field_min, field_max);
+  float a = encoder.get_entry(0), b = encoder.get_entry(encoder.size()-1);
+  if(!std::isfinite(field_min) || !std::isfinite(field_max) || field_min >= field_max ||
+     !std::isfinite(a) || !std::isfinite(b) || a == b)
+    return false;
+  float calibrated_min = std::max(0.0f, std::max(std::min(a,b), field_min));
+  float calibrated_max = std::min(CALIBRATION_RANGE*Constants::DEG2RAD,
+                                  std::min(std::max(a,b), field_max));
+  float opposite_margin = JOINT_OPPOSITE_TRAVEL_MARGIN_DEG*Constants::DEG2RAD;
+  float home_boundary = home.final_position - home.away_from_stop_sign *
+                        home.measured_clearance * HOMING_USABLE_CLEARANCE_FRACTION;
+  if(!std::isfinite(calibrated_min) || !std::isfinite(calibrated_max) ||
+     calibrated_min >= calibrated_max || !std::isfinite(opposite_margin) ||
+     opposite_margin < 0.0f || !std::isfinite(home_boundary))
+    return false;
+
+  if(home.away_from_stop_sign > 0.0f) {
+    lower = std::max(calibrated_min, home_boundary);
+    upper = calibrated_max-opposite_margin;
+  } else {
+    lower = calibrated_min+opposite_margin;
+    upper = std::min(calibrated_max, home_boundary);
+  }
+  return std::isfinite(lower) && std::isfinite(upper) && lower < upper;
+}
+
+bool Robot::update_travel_limits() {
+  JointTravelLimits limits;
+  const float tolerance = JOINT_LIMIT_NUMERIC_TOLERANCE_DEG*Constants::DEG2RAD;
+  for(int i=0; i<NUM_JOINTS; ++i) {
+    float lower, upper;
+    if(!calculate_joint_travel_limit(i, joint_home_references[i], lower, upper))
+      return false;
+    limits.set(i, lower, upper, tolerance);
+  }
+  uint32_t status = save_and_disable_interrupts();
+  joint_limits = limits;
+  path_planner.set_joint_limits(limits);
+  restore_interrupts(status);
+  return true;
+}
+
+void Robot::reset_motion_path() {
+  uint32_t status = save_and_disable_interrupts();
+  path_planner.reset();
+  motion_controller.reset();
+  state = ERobotState::IDLE;
+  restore_interrupts(status);
+}
+
+bool Robot::set_pose(const Pose6DF& pose, bool enforce_travel_limits) {
   // run inverse kinematic and compute joint positions
   float joint_positions[NUM_JOINTS];
-  kinematic_model->inverse(pose, joint_positions);
+  last_pose_error.clear();
+  if(!checked_inverse(*kinematic_model, pose, joint_positions)) {
+    last_pose_error = "invalid inverse kinematics";
+    return false;
+  }
+  if(enforce_travel_limits && !joint_limits.contains(joint_positions)) {
+    last_pose_error = joint_limits.describe_violation(joint_positions);
+    return false;
+  }
 
   while(true) {
     // Attempt to acquire spinlock non-blocking and set new target data for the servo loops
@@ -319,6 +432,7 @@ void Robot::set_pose(const Pose6DF& pose) {
       for (int i = 0; i < NUM_JOINTS; i++) {
         shared_data.joint_target_positions[i] = joint_positions[i];
         shared_data.joint_target_velocities[i] = 0.0f;
+        planned_joint_positions[i] = joint_positions[i];
         // LOG_DEBUG("Joint-%i: set pose -> angle %f", i, joint_positions[i]);
       }
       spin_unlock_unsafe(shared_data.lock);
@@ -327,6 +441,7 @@ void Robot::set_pose(const Pose6DF& pose) {
   }
 
   current_pose = pose;
+  return true;
 }
 
 Pose6DF Robot::pose_from_joint_angles() {
@@ -361,7 +476,107 @@ bool Robot::check_all_joints_ready() {
   return all_ready;
 }
 
+bool Robot::finish_homing_handover(
+    bool enable_feedback,
+    HomingController homing_controllers[NUM_JOINTS],
+    uint8_t joint_mask) {
+  // joints_spin_lock is held throughout: no intervening encoder read, servo
+  // update, or old-target copy may split the measurement and handover.
+  float positions[NUM_JOINTS];
+  JointHomeReference candidate_home[NUM_JOINTS];
+  bool enabled[NUM_JOINTS]{};
+  bool restart_ok = true, finite_positions = true;
+  for(int i=0; i<NUM_JOINTS; ++i)
+    candidate_home[i] = joint_home_references[i];
+
+  for(int i=0; i<NUM_JOINTS; ++i) {
+    auto* joint = joints[i];
+    auto* servo = joint->servo_controller;
+    int32_t raw = servo->get_encoder().read_abs_angle_raw();
+    positions[i] = servo->encoder_angle_to_motor_pos(raw);
+    finite_positions &= std::isfinite(positions[i]);
+    bool ready = joint->is_homed && joint->is_calibrated;
+    enabled[i] = ready && enable_feedback && servo->get_motor_driver().get_amplitude() > 0.0f;
+
+    if((joint_mask>>i)&1) {
+      candidate_home[i] = JointHomeReference{};
+      float clearance, away_sign;
+      if(ready && homing_controllers[i].get_measured_clearance_at_raw(
+                      raw, clearance, away_sign)) {
+        candidate_home[i].valid = true;
+        candidate_home[i].final_position = positions[i];
+        candidate_home[i].measured_clearance = clearance;
+        candidate_home[i].away_from_stop_sign = away_sign;
+      } else if(ready) {
+        LOG_ERROR("HOME GUARD: axis %i has no valid measured clearance", i+1);
+        joint->is_homed = false;
+        ready = false;
+        enabled[i] = false;
+        restart_ok = false;
+      }
+    }
+
+    if(ready) {
+      if(servo->get_enc_to_pos_lut().size() < 2 || servo->get_pos_to_field_lut().size() < 2 ||
+         !servo->get_enc_to_pos_lut().is_monotonic()) {
+        LOG_ERROR("HOME GUARD: axis %i invalid calibration domain", i+1);
+        joint->is_homed = false;
+        enabled[i] = false;
+        restart_ok = false;
+        continue;
+      }
+      float reference = servo->motor_pos_to_field_angle(positions[i]);
+      float mismatch = remainderf(reference-servo->get_motor_driver().get_field_angle(), Constants::TWO_PI_F);
+      bool in_lut = servo->get_enc_to_pos_lut().in_input_range(raw) &&
+                    servo->get_pos_to_field_lut().in_input_range(positions[i]);
+      float lower, upper;
+      bool valid_limits = calculate_joint_travel_limit(i, candidate_home[i], lower, upper);
+      float tolerance = JOINT_LIMIT_NUMERIC_TOLERANCE_DEG*Constants::DEG2RAD;
+      bool in_soft_range = valid_limits &&
+                           positions[i] >= lower-tolerance &&
+                           positions[i] <= upper+tolerance;
+      if(servo->get_encoder().get_status() != 0 || !in_lut ||
+         !in_soft_range ||
+         !std::isfinite(positions[i]) || !std::isfinite(mismatch) ||
+         fabsf(mismatch) > 75.0f*Constants::DEG2RAD) {
+        LOG_INFO("HOME GUARD: axis %i refused; in_lut=%i soft_range=%i mismatch_deg=%f", i+1,
+                 int(in_lut), int(in_soft_range), mismatch*Constants::RAD2DEG);
+        joint->is_homed = false;
+        candidate_home[i].valid = false;
+        enabled[i] = false;
+        restart_ok = false;
+      }
+    }
+  }
+  Pose6DF measured_pose;
+  if(!finite_positions || !kinematic_model->foreward(positions, measured_pose)) {
+    LOG_ERROR("HOME HANDOVER: invalid measured pose");
+    for(int i=0; i<NUM_JOINTS; ++i) {
+      joints[i]->is_homed = false;
+      joint_home_references[i].valid = false;
+      joints[i]->servo_controller->set_motor_update_enabled(false);
+    }
+    return false;
+  }
+  for(int i=0; i<NUM_JOINTS; ++i)
+    joint_home_references[i] = joints[i]->is_homed ? candidate_home[i]
+                                                   : JointHomeReference{};
+  spin_lock_unsafe_blocking(shared_data.lock);
+  for(int i=0; i<NUM_JOINTS; ++i) {
+    shared_data.joint_target_positions[i] = positions[i];
+    shared_data.joint_target_velocities[i] = 0.0f;
+    planned_joint_positions[i] = positions[i];
+  }
+  spin_unlock_unsafe(shared_data.lock);
+  // FK only: an IK round trip must not replace the measured joint targets.
+  current_pose = measured_pose;
+  for(int i=0; i<NUM_JOINTS; ++i)
+    joints[i]->servo_controller->set_motor_update_enabled(enabled[i], &positions[i]);
+  return restart_ok;
+}
+
 bool Robot::home(uint8_t joint_mask, float retract_angles[NUM_JOINTS]) {
+  reset_motion_path();
   HomingController homing_controller[NUM_JOINTS];
   LOG_INFO("homing...");
   enable_servo_control(false);
@@ -377,10 +592,21 @@ bool Robot::home(uint8_t joint_mask, float retract_angles[NUM_JOINTS]) {
   for(int i=0; i<NUM_JOINTS; i++) {
     // only start requested joints
     if(((joint_mask>>i)&1) == 0) continue;
+    joints[i]->is_homed = false;
+    joint_home_references[i] = JointHomeReference{};
     LOG_DEBUG("start homing axis %i", i);
     homing_controller[i].start(joints[i]->servo_controller, 
                                -HOMING_VELOCITY, 360.0f*DEG_TO_RAD, HOMING_CURRENT,
-                               ENCODER_ANGLE_TO_ROTOR_ANGLE, retract_angles[i]);
+                               ENCODER_ANGLE_TO_ROTOR_ANGLE, retract_angles[i]
+                               #ifdef HOMING_RESTORE_BEFORE_BACKOFF_TEST
+                                 , true
+                               #elif defined(HOMING_ENCODER_BACKOFF)
+                                 , false
+                               #endif
+                               #ifdef HOMING_ENCODER_BACKOFF
+                                 , true
+                               #endif
+                               );
   }
 
   // run homing controllers
@@ -403,7 +629,7 @@ bool Robot::home(uint8_t joint_mask, float retract_angles[NUM_JOINTS]) {
     // only check requested joints
     if(((joint_mask>>i)&1) == 0) continue;
 
-    #ifdef HOMING_TRANSITION_TEST
+    #if defined(HOMING_TRANSITION_TEST) || defined(HOMING_PHASE_TRACE)
       LOG_INFO("HOME TEST: axis %i backoff begins", i+1);
     #endif
     homing_controller[i].finalize();
@@ -416,9 +642,11 @@ bool Robot::home(uint8_t joint_mask, float retract_angles[NUM_JOINTS]) {
     }
 
     // set joint angles
+    #ifndef HOMING_ENCODER_BACKOFF
     spin_lock_unsafe_blocking(shared_data.lock);
     shared_data.joint_target_positions[i] = joints[i]->servo_controller->read_position();
     spin_unlock_unsafe(shared_data.lock);
+    #endif
   }
 
   #ifdef HOMING_TRANSITION_TEST
@@ -440,11 +668,24 @@ bool Robot::home(uint8_t joint_mask, float retract_angles[NUM_JOINTS]) {
     }
   #endif
 
+  #ifdef HOMING_ENCODER_BACKOFF
+    bool restart_ok = finish_homing_handover(
+      #ifdef HOMING_TEST_SKIP_SERVO_RESTART
+        false
+      #else
+        true
+      #endif
+      , homing_controller, joint_mask
+    );
+  #endif
+
   // servo updates may continue here
   spin_unlock_unsafe(joints_spin_lock);
 
   // get pose from joint angles
-  set_pose(pose_from_joint_angles());
+  #ifndef HOMING_ENCODER_BACKOFF
+  set_pose(pose_from_joint_angles(), false);
+  #endif
 
   #ifdef HOMING_TRANSITION_TEST
     float targets[NUM_JOINTS];
@@ -468,9 +709,11 @@ bool Robot::home(uint8_t joint_mask, float retract_angles[NUM_JOINTS]) {
   #endif
 
   // enable servo loops if all joints are initialized
+  #ifndef HOMING_ENCODER_BACKOFF
   bool restart_ok = true;
   #if !defined(HOMING_TRANSITION_TEST) || !defined(HOMING_TEST_SKIP_SERVO_RESTART)
     restart_ok = enable_servo_control(true);
+  #endif
   #endif
 
   #ifdef HOMING_SERVO_PULSE_TEST
@@ -519,7 +762,11 @@ bool Robot::calibrate_joint(int joint_idx, bool store_calibration, bool print_me
   if(joint_idx<0 || joint_idx >= NUM_JOINTS)
     return false;
 
+  // Calibration changes the coordinate reference. A normal measured Home must
+  // establish a new physical-stop clearance before Cartesian motion resumes.
+  joint_home_references[joint_idx] = JointHomeReference{};
   RobotJoint* joint = joints[joint_idx];
+  reset_motion_path();
 
   // prevent servo loop updates from running during homing
   enable_servo_control(false);
@@ -541,7 +788,7 @@ bool Robot::calibrate_joint(int joint_idx, bool store_calibration, bool print_me
   spin_unlock_unsafe(joints_spin_lock);
 
   // recover pose from joint angles
-  set_pose(pose_from_joint_angles());
+  set_pose(pose_from_joint_angles(), false);
 
   // enable servo loops if all joints are initialized
   bool restart_ok = true;
@@ -563,9 +810,11 @@ bool Robot::calibrate_joint(int joint_idx, bool store_calibration, bool print_me
 
 bool Robot::can_process_command(const GCodeCommand& cmd) {
   if(cmd.get_command() == "G0" || 
+     cmd.get_command() == "G1" ||
      cmd.get_command() == "G4")
   {
-    return path_planner.input_queue_full() == false;
+    // A latched fault must be reported even if it left a full queue behind.
+    return path_planner.has_fault() || path_planner.input_queue_full() == false;
   }
 
   return true;
@@ -597,7 +846,10 @@ void Robot::process_machine_command(const GCodeCommand& cmd, std::string& reply)
    // enable motors
   if(cmd.get_command() == "M17") {
     // read current pose from HW and set it as current pose
-    set_pose(pose_from_joint_angles());
+    if(!set_pose(pose_from_joint_angles(), false)) {
+      reply = "error: invalid measured pose\n";
+      return;
+    }
 
     // enable motors
     spin_lock_unsafe_blocking(joints_spin_lock);
@@ -660,7 +912,7 @@ void Robot::process_machine_command(const GCodeCommand& cmd, std::string& reply)
 
   // check if all planned motions are finished executing
   if(cmd.get_command() == "M53") {
-    bool f = path_planner.all_finished();
+    bool f = path_planner.all_finished() && !motion_controller.is_running();
     reply += f ? "1\n" : "0\n";
     reply += "ok\n";
     return;
@@ -682,6 +934,10 @@ void Robot::process_machine_command(const GCodeCommand& cmd, std::string& reply)
   if(cmd.get_command() == "M57") {
     uint32_t servo_loop_freq = servo_loop_frequency_counter.get();
     uint32_t mcontroler_freq = motion_controller_frequency_counter.get();
+    float targets[NUM_JOINTS];
+    spin_lock_unsafe_blocking(shared_data.lock);
+    for(int i=0; i<NUM_JOINTS; ++i) targets[i] = shared_data.joint_target_positions[i];
+    spin_unlock_unsafe(shared_data.lock);
 
     spin_lock_unsafe_blocking(joints_spin_lock);
     for(int i=0; i<NUM_JOINTS; i++) {
@@ -694,6 +950,35 @@ void Robot::process_machine_command(const GCodeCommand& cmd, std::string& reply)
       reply += std::string(",  encoder_angle=") + std::to_string(angle) + " deg";
       reply += std::string(",  crc_errors=") + std::to_string(crc_errors); 
       reply += std::string(",  enc_status=") + std::to_string(joints[i]->encoder->get_status()) + "\n"; 
+      auto* servo = joints[i]->servo_controller;
+      auto& driver = servo->get_motor_driver();
+      int32_t raw = joints[i]->encoder->get_last_abs_raw_angle();
+      float position = servo->encoder_angle_to_motor_pos(raw);
+      float reference = servo->motor_pos_to_field_angle(position);
+      float held = driver.get_field_angle();
+      float mismatch = remainderf(reference-held, Constants::TWO_PI_F);
+      reply += "Axis " + std::to_string(i+1) + " diagnostic: motor_deg=" +
+               std::to_string(position*Constants::RAD2DEG) + " target_deg=" +
+               std::to_string(targets[i]*Constants::RAD2DEG) + " amplitude=" +
+               std::to_string(driver.get_amplitude()) + " in_lut=" +
+               std::to_string(servo->get_enc_to_pos_lut().in_input_range(raw)) + "\n";
+      reply += "Axis " + std::to_string(i+1) + " phase: held_deg=" +
+               std::to_string(held*Constants::RAD2DEG) + " reference_deg=" +
+               std::to_string(reference*Constants::RAD2DEG) + " mismatch_deg=" +
+               std::to_string(mismatch*Constants::RAD2DEG) + "\n";
+      const auto& home = joint_home_references[i];
+      float lower = 0.0f, upper = 0.0f;
+      bool limits_valid = calculate_joint_travel_limit(i, home, lower, upper);
+      float stop = home.final_position-home.away_from_stop_sign*home.measured_clearance;
+      reply += "Axis " + std::to_string(i+1) + " travel: home_ref=" +
+               std::to_string(home.valid) + " clearance_deg=" +
+               std::to_string(home.measured_clearance*Constants::RAD2DEG) +
+               " stop_deg=" + std::to_string(stop*Constants::RAD2DEG) +
+               " limits_valid=" + std::to_string(limits_valid) + "\n";
+      if(limits_valid)
+        reply += "Axis " + std::to_string(i+1) + " limits_deg=" +
+                 std::to_string(lower*Constants::RAD2DEG) + ".." +
+                 std::to_string(upper*Constants::RAD2DEG) + "\n";
     }
     spin_unlock_unsafe(joints_spin_lock);
 
@@ -737,12 +1022,14 @@ void Robot::process_machine_command(const GCodeCommand& cmd, std::string& reply)
 void Robot::process_motion_command(const GCodeCommand& cmd, std::string& reply) {
   Pose6DF end_pose;
   
-  #ifndef JOINT_READY_OVERRIDE
-  if(!all_joints_ready) {
-    reply = "error: not all joints calibrated and homed\n";
+  if(!all_joints_ready || !update_travel_limits()) {
+    reply = "error: not all joints calibrated, homed, and travel-referenced\n";
     return;
   }
-  #endif
+  if(path_planner.has_fault()) {
+    reply = "error: motion limit fault; home before moving\n";
+    return;
+  }
   
   if(path_planner.input_queue_full()) {
     reply = "busy\n";
@@ -750,11 +1037,15 @@ void Robot::process_motion_command(const GCodeCommand& cmd, std::string& reply) 
   }
 
   // read feed rate
-  current_feedrate.linear = cmd.get_value('F', current_feedrate.linear);
-  current_feedrate.angular = cmd.get_value('R', current_feedrate.angular);
-
-  if(cmd.has_word('I'))
-    state = ERobotState::EXECUTING_PATH;
+  LinearAngular feedrate(cmd.get_value('F', current_feedrate.linear),
+                         cmd.get_value('R', current_feedrate.angular));
+  if(!std::isfinite(feedrate.linear) || !std::isfinite(feedrate.angular) ||
+     feedrate.linear <= 0.0f || feedrate.angular <= 0.0f ||
+     !std::isfinite(max_acceleration.linear) || !std::isfinite(max_acceleration.angular) ||
+     max_acceleration.linear <= 0.0f || max_acceleration.angular <= 0.0f) {
+    reply = "error: invalid feedrate or acceleration\n";
+    return;
+  }
 
   // read translation
   end_pose.translation.x = cmd.get_value('X', current_pose.translation.x);
@@ -770,19 +1061,28 @@ void Robot::process_motion_command(const GCodeCommand& cmd, std::string& reply) 
   }
 
   // create path segment
+  float end_joint_positions[NUM_JOINTS];
+  if(!checked_inverse(*kinematic_model, end_pose, end_joint_positions)) {
+    reply = "error: invalid inverse kinematics at path endpoint\n";
+    return;
+  }
   CartesianPathSegment path_segment(current_pose, 
                                     end_pose, 
-                                    current_feedrate, 
+                                    feedrate,
                                     max_acceleration,
                                     current_tool_outputs);
 
   bool ok = path_planner.add_cartesian_path_segment(path_segment);
   if(ok) {
+    current_feedrate = feedrate;
+    if(cmd.has_word('I')) state = ERobotState::EXECUTING_PATH;
     path_planner.run_look_ahead_planning();
     current_pose = end_pose;
+    for(int i=0; i<NUM_JOINTS; ++i)
+      planned_joint_positions[i] = end_joint_positions[i];
     reply = "ok\n";
   } else {
-    reply = "error\n";
+    reply = "error: " + path_planner.get_rejection_reason() + "\n";
   }
 }
 
@@ -793,8 +1093,16 @@ void Robot::process_motion_command(const GCodeCommand& cmd, std::string& reply) 
 void Robot::process_set_pose_command(const GCodeCommand& cmd, std::string& reply) {
   Pose6DF pose;
 
-  if(!all_joints_ready) {
-    reply = "error: not all joints calibrated and homed\n";
+  if(!all_joints_ready || !update_travel_limits()) {
+    reply = "error: not all joints calibrated, homed, and travel-referenced\n";
+    return;
+  }
+  if(path_planner.has_fault()) {
+    reply = "error: motion limit fault; home before moving\n";
+    return;
+  }
+  if(!path_planner.all_finished() || motion_controller.is_running()) {
+    reply = "busy\n"; // do not race realtime targets against queued paths
     return;
   }
 
@@ -812,17 +1120,16 @@ void Robot::process_set_pose_command(const GCodeCommand& cmd, std::string& reply
   }
 
   // set the current pose und update target angles for servo loops
-  set_pose(pose);
-  reply = "ok\n";
+  // Evaluate first: constructing the error must use this attempt's diagnostics.
+  bool ok = set_pose(pose);
+  reply = ok ? "ok\n" : "error: " + last_pose_error + "\n";
 }
 
 void Robot::process_dwell_command(const GCodeCommand& cmd, std::string& reply) {
-  #ifndef JOINT_READY_OVERRIDE
-  if(!all_joints_ready) {
-    reply = "error: not all joints calibrated and homed\n";
+  if(path_planner.has_fault()) {
+    reply = "error: motion limit fault; home before moving\n";
     return;
   }
-  #endif
 
   if(path_planner.input_queue_full()) {
     reply = "busy\n";
@@ -833,9 +1140,26 @@ void Robot::process_dwell_command(const GCodeCommand& cmd, std::string& reply) {
   float dwell_time = 1.0f;
   if(cmd.has_word('S')) dwell_time = cmd.get_value('S');          // time given in seconds
   if(cmd.has_word('P')) dwell_time = cmd.get_value('P')*0.001f;   // time given in milliseconds
+  if(!std::isfinite(dwell_time) || dwell_time < 0.0f) {
+    reply = "error: invalid dwell time\n";
+    return;
+  }
 
-  // create path segment
-  CartesianPathSegment path_segment(current_pose, current_tool_outputs, dwell_time);
+  // A dwell is ordered with planned motion, but it must not create a new joint
+  // target or invoke IK. Hold the endpoint retained when the preceding pose was
+  // accepted; before Home this is the initialized target.
+  float dwell_joint_positions[NUM_JOINTS];
+  for(int i=0; i<NUM_JOINTS; ++i) {
+    dwell_joint_positions[i] = planned_joint_positions[i];
+    if(!std::isfinite(dwell_joint_positions[i])) {
+      reply = "error: invalid planned joint target for dwell\n";
+      return;
+    }
+  }
+
+  // create non-motion path segment
+  CartesianPathSegment path_segment(current_pose, current_tool_outputs,
+                                    dwell_time, dwell_joint_positions);
   bool ok = path_planner.add_cartesian_path_segment(path_segment);
 
   if(ok) {
@@ -867,7 +1191,11 @@ void Robot::process_set_servo_parameter_command(const GCodeCommand& cmd, std::st
 void Robot::process_home_command(const GCodeCommand& cmd, std::string& reply) {
   float retract_angles[NUM_JOINTS];
   for(float& angle : retract_angles)
+    #ifdef HOMING_ENCODER_BACKOFF
+    angle = HOMING_MEASURED_BACKOFF_ANGLE_DEG * Constants::DEG2RAD;
+    #else
     angle = HOMING_BACKOFF_ANGLE_DEG * Constants::DEG2RAD;
+    #endif
 
   // TODO: check parameter and build joint mask
   uint8_t joint_mask = 0;
@@ -892,7 +1220,7 @@ void Robot::process_home_command(const GCodeCommand& cmd, std::string& reply) {
 
   bool ok = home(joint_mask, retract_angles);
 
-  reply = ok ? "ok\n" : "error\n";
+  reply = ok ? "ok\n" : "error: homing or servo restart failed; inspect HOME SEARCH/BACKOFF/GUARD logs\n";
 }
 
 void Robot::process_calibrate_joint_command(const GCodeCommand& cmd, std::string& reply) {
@@ -912,9 +1240,27 @@ void Robot::process_tool_output_command(const GCodeCommand& cmd, std::string& re
     return;
   }
 
-  // set current tool output value
   float tool_value = cmd.get_value('S', 0.0f);
-  current_tool_outputs[tool_index] = tool_value;
+  if(!std::isfinite(tool_value)) {
+    reply = "error: Tool value is not finite\n";
+    return;
+  }
 
+  // A fault stops planner execution, so a queued G4 cannot apply its output.
+  // Permit only fail-safe off to bypass that stopped queue. Do not remember a
+  // rejected nonzero value that could be applied by a later post-Home dwell.
+  if(path_planner.has_fault()) {
+    if(tool_value > 0.0f) {
+      reply = "error: motion limit fault; only tool-off is accepted\n";
+      return;
+    }
+    current_tool_outputs[tool_index] = 0.0f;
+    if(robot_tools[tool_index] != nullptr)
+      robot_tools[tool_index]->set_value(0.0f);
+    reply = "ok\n";
+    return;
+  }
+
+  current_tool_outputs[tool_index] = tool_value;
   reply = "ok\n";
 }
