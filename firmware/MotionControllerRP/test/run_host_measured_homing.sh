@@ -10,11 +10,33 @@ trap 'rm -f -- "$test_tmp/homing_check"; rmdir -- "$test_tmp"' EXIT
   sed -n '/^int main()/,$p' "$test_root/test/host_measured_homing.cpp"
 } | g++ -std=c++17 -Wall -Wextra -I "$test_root/src" -x c++ - -o "$test_tmp/homing_check"
 "$test_tmp/homing_check"
+
 {
-  sed -n '1,/^int main()/p' "$test_root/test/host_homing_handover.cpp" | sed '$d'
-  sed -n '/^bool Robot::calculate_joint_travel_limit(/,/^}/p' "$test_root/src/robot.cpp"
-  sed -n '/^bool Robot::finish_homing_handover(/,/^}/p' "$test_root/src/robot.cpp"
-  sed -n '/^void Robot::update_servo_controllers(/,/^}/p' "$test_root/src/robot.cpp"
-  sed -n '/^int main()/,$p' "$test_root/test/host_homing_handover.cpp"
+  sed -n '1,/^int main()/p' "$test_root/test/host_homing_finish.cpp" | sed '$d'
+  sed -n '/^bool Robot::move_to_homing_finish_position(/,/^}/p' "$test_root/src/robot.cpp"
+  sed -n '/^int main()/,$p' "$test_root/test/host_homing_finish.cpp"
 } | g++ -std=c++17 -Wall -Wextra -I "$test_root/src" -x c++ - -o "$test_tmp/homing_check"
+"$test_tmp/homing_check"
+for mode in baseline transitional; do
+  extra_flags=()
+  if [[ "$mode" == transitional ]]; then
+    extra_flags+=(-DHOMING_TRANSITIONAL_FIELD_HANDOVER)
+  fi
+  {
+    sed -n '1,/^int main()/p' "$test_root/test/host_homing_handover.cpp" | sed '$d'
+    sed -n '/^bool Robot::calculate_joint_travel_limit(/,/^}/p' "$test_root/src/robot.cpp"
+    sed -n '/^bool Robot::finish_homing_handover(/,/^}/p' "$test_root/src/robot.cpp"
+    sed -n '/^void Robot::update_servo_controllers(/,/^}/p' "$test_root/src/robot.cpp"
+    sed -n '/^int main()/,$p' "$test_root/test/host_homing_handover.cpp"
+  } | g++ -std=c++17 -Wall -Wextra "${extra_flags[@]}" -I "$test_root/src" -x c++ - -o "$test_tmp/homing_check"
+  "$test_tmp/homing_check"
+done
+
+{
+  sed -n '1,/^int main()/p' "$test_root/test/host_homing_transition.cpp" | sed '$d'
+  sed -n '/^void ServoController::update(/,/^}/p' "$test_root/src/servo_control/servo_controller.cpp"
+  sed -n '/^void ServoController::start_homing_handover(/,/^}/p' "$test_root/src/servo_control/servo_controller.cpp"
+  sed -n '/^int main()/,$p' "$test_root/test/host_homing_transition.cpp"
+} | g++ -std=c++17 -Wall -Wextra -I "$test_root/src" -x c++ - \
+    "$test_root/src/servo_control/pid.cpp" -o "$test_tmp/homing_check"
 "$test_tmp/homing_check"

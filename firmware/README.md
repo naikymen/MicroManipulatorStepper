@@ -238,14 +238,20 @@ for the configured duty limits and additional safety notes.
 ### Normal homing and feedback handover
 
 The default `pico` firmware finds the mechanical stop from encoder stall,
-backs away by encoder-confirmed movement, validates the saved calibration and
-electrical phase, then starts feedback from one final measured position. The
-complete sequence, failure behavior, and resulting travel limits are explained
-in [How a normal homing move works](../documentation/firmware/homing_flow.md).
+backs away by 2.5 degrees of encoder-confirmed movement, validates the saved
+calibration and 75-electrical-degree phase limit, then starts feedback from one
+final measured position. Its first command preserves the field already holding
+the motor and removes that temporary difference at a bounded rate while the
+encoder position is monitored. It then moves each selected joint smoothly to
+the calibrated 7-degree post-Home position so full 1 mm Cartesian jogs have
+room in either direction. The complete sequence, failure behavior, and
+resulting travel limits are explained in
+[How a normal homing move works](../documentation/firmware/homing_flow.md).
 
-Calibration remains a separate operation with its own measurement origin,
-backoff, fitting, and optional persistence. Normal Home uses those saved tables
-but does not modify them.
+Calibration remains a separate operation. Before its measurement sweep, it
+establishes its origin only after raw encoder travel confirms 1.5 degrees of
+clearance from the stop. Normal Home uses the saved tables but does not modify
+them.
 
 Offline regressions (no device access):
 
@@ -283,7 +289,7 @@ pose failed).
 
 `calibration_guard_reference_test` extends this normal-timing trace with
 `CALIBRATION_REFERENCE_TEST`: calibration finishes with feedback still paused,
-but subsequent Home retains the normal bumpless restart and 75-degree guard.
+but subsequent Home retains the normal bounded transition and 75-degree guard.
 Flash with `pio run -e calibration_guard_reference_test -t upload`. For motor 3,
 `M56 J2 P` homes, sweeps through the configured 83-degree calibration range and
 back, and replaces only its RAM tables. **Do not add `S`**: the saved tables
@@ -404,10 +410,11 @@ shortest electrical-angle offset from the calibrated reference to the held
 homing field, instead of zero. Existing integral/output limits still apply;
 offsets beyond those limits cannot be retained exactly. Compare
 `applied_delta_deg` and the visible snap against `homing_servo_pulse_test`.
-This handover flag itself does not change PWM limits, backoff, or calibration
-tables, and does not correct out-of-range encoder lookup-table inputs.
-It is enabled in normal `pico` firmware and these comparison environments.
-Builds without `HOMING_BUMPLESS_SERVO_RESTART` retain zero-initialized PID resets.
+This diagnostic handover flag itself does not change PWM limits, backoff, or
+calibration tables, and does not correct out-of-range encoder lookup-table
+inputs. It is not enabled in normal `pico` firmware; normal firmware uses the
+bounded temporary transition described above. Builds without
+`HOMING_BUMPLESS_SERVO_RESTART` retain zero-initialized PID resets.
 
 `homing_bumpless_hold_test` extends only that fixed handover's pulse duration
 to one second with `HOMING_SERVO_PULSE_US=1000000`. The same raw-encoder-based

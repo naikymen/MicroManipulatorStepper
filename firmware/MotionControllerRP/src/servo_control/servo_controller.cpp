@@ -99,7 +99,26 @@ void ServoController::update(float target_motor_pos, float dt, float one_over_dt
     motor_pos_prev = motor_pos;
     return;
   }
+  #ifdef HOMING_TRANSITIONAL_FIELD_HANDOVER
+    if(homing_handover.active) {
+      homing_handover.elapsed_s += dt;
+      homing_handover.max_position_error =
+        std::max(homing_handover.max_position_error, fabsf(pos_error));
+      if(encoder.get_status() != 0 || !std::isfinite(pos_error) ||
+         fabsf(pos_error) > HOMING_HANDOVER_MAX_POSITION_ERROR_DEG*Constants::DEG2RAD ||
+         homing_handover.elapsed_s > HOMING_HANDOVER_TIMEOUT_MS*0.001f) {
+        homing_handover.active = false;
+        homing_handover.failed = true;
+        motor_update_enabled = false;
+        return;
+      }
+    }
+  #endif
+
   float field_angle = motor_pos_to_field_angle(motor_pos);
+  #ifdef HOMING_TRANSITIONAL_FIELD_HANDOVER
+    field_angle += homing_field_origin_offset;
+  #endif
 
   // position controll loop
   float velocity_target = pos_controller.compute(pos_error, dt, one_over_dt);
@@ -162,6 +181,28 @@ void ServoController::update(float target_motor_pos, float dt, float one_over_dt
       motor_driver.set_field_angle(field_angle + output);
     #endif
   } 
+
+  #ifdef HOMING_TRANSITIONAL_FIELD_HANDOVER
+    if(homing_handover.active) {
+      const float step = HOMING_HANDOVER_FIELD_RATE_DEG_S*Constants::DEG2RAD*dt;
+      if(fabsf(homing_field_origin_offset) <= step)
+        homing_field_origin_offset = 0.0f;
+      else
+        homing_field_origin_offset += homing_field_origin_offset > 0.0f ? -step : step;
+      homing_handover.field_offset = homing_field_origin_offset;
+
+      if(homing_field_origin_offset == 0.0f &&
+         fabsf(pos_error) <= HOMING_HANDOVER_SETTLE_TOLERANCE_DEG*Constants::DEG2RAD) {
+        homing_handover_stable_s += dt;
+        if(homing_handover_stable_s >= HOMING_HANDOVER_SETTLE_MS*0.001f) {
+          homing_handover.active = false;
+          homing_handover.complete = true;
+        }
+      } else {
+        homing_handover_stable_s = 0.0f;
+      }
+    }
+  #endif
 
   // store values for next update
   motor_pos_prev = motor_pos;
@@ -290,8 +331,9 @@ void ServoController::set_motor_update_enabled(bool enable, const float* measure
   }
   pos_controller.reset();
   #ifdef HOMING_BUMPLESS_SERVO_RESTART
-    // Retain the held field's offset from the calibrated reference on restart.
-    // PID reset clamps this preload to the existing integral/output limits.
+    // Diagnostic only: retaining this offset was shown to carry an arbitrary
+    // homing stall phase into later cycles. Normal firmware resets the PID and
+    // resumes from the calibrated encoder-to-field relationship below.
     float held_field_offset = enable ? remainderf(motor_driver.get_field_angle() -
                                                   motor_pos_to_field_angle(motor_pos),
                                                   Constants::TWO_PI_F) : 0.0f;
@@ -302,6 +344,25 @@ void ServoController::set_motor_update_enabled(bool enable, const float* measure
   velocity_lowpass.reset(0.0f);
   motor_pos_prev = motor_pos;
   motor_update_enabled = enable;
+}
+
+void ServoController::start_homing_handover(float measured_position) {
+  motor_pos = measured_position;
+  motor_pos_prev = measured_position;
+  pos_error = 0.0f;
+  velocity = output = 0.0f;
+  pos_controller.reset();
+  velocity_controller.reset();
+  velocity_lowpass.reset(0.0f);
+  homing_field_origin_offset = remainderf(
+    motor_driver.get_field_angle() - motor_pos_to_field_angle(measured_position),
+    Constants::TWO_PI_F);
+  homing_handover = HomingHandoverStatus{};
+  homing_handover.active = true;
+  homing_handover.initial_field_offset = homing_field_origin_offset;
+  homing_handover.field_offset = homing_field_origin_offset;
+  homing_handover_stable_s = 0.0f;
+  motor_update_enabled = true;
 }
 
 void ServoController::set_encoder_update_enabled(bool enable) {

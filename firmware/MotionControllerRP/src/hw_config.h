@@ -7,8 +7,9 @@
 #if defined(ENCODER_WIGGLE_TEST) && defined(MOTOR_STEP_TEST)
   #error "Select only one firmware diagnostic environment"
 #endif
-#if defined(HOMING_ENCODER_BACKOFF) && (!defined(HOMING_BUMPLESS_SERVO_RESTART) || !defined(HOMING_RESTART_GUARD))
-  #error "Measured G28 requires continuous-field restart and its phase guard"
+#if defined(HOMING_ENCODER_BACKOFF) && (!defined(HOMING_RESTART_GUARD) || \
+    !defined(HOMING_TRANSITIONAL_FIELD_HANDOVER))
+  #error "Measured G28 requires its guarded transitional field handover"
 #endif
 
 // #define DEMO_MODE
@@ -48,14 +49,16 @@ constexpr bool ENABLE_ENCODER_CRC = false;
 // field, still well below the original 50 rad/s setting.
 constexpr float HOMING_VELOCITY   = 0.2f;        // rad per s
 constexpr float HOMING_CURRENT    = 0.15f;       // range 0..1
-// G28 field rotation, expressed as mechanical motor degrees. The former
-// 1.8-degree command could finish outside the measured calibration range.
-// Calibration keeps its separate original backoff and measurement origin.
+// Legacy fixed-field backoff, expressed as mechanical motor degrees. Normal
+// firmware uses the encoder-measured distances below instead.
 constexpr float HOMING_BACKOFF_ANGLE_DEG = 3.6f;
-// G28's verified path requests measured shaft-equivalent clearance, then
-// continues only as far as needed to enter both calibrated lookup domains.
-// Calibration and legacy diagnostic images retain their fixed-field backoff.
-constexpr float HOMING_MEASURED_BACKOFF_ANGLE_DEG = 1.5f;
+// Calibration has no lookup table yet, so establish its starting point from
+// raw encoder travel away from the stop. Normal G28 backs off farther and
+// therefore finishes inside the range measured from this origin.
+constexpr float CALIBRATION_BACKOFF_CLEARANCE_DEG = 1.5f;
+// Normal G28 backs farther away than calibration's origin so its initial
+// encoder position is unambiguously inside both saved lookup-table domains.
+constexpr float HOMING_MEASURED_BACKOFF_ANGLE_DEG = 2.5f;
 constexpr float HOMING_BACKOFF_MAX_CLEARANCE_DEG = 3.6f;
 constexpr uint32_t HOMING_BACKOFF_TIMEOUT_MS = 3000;
 constexpr uint32_t HOMING_BACKOFF_SETTLE_MS = 100;
@@ -64,12 +67,34 @@ constexpr float HOMING_BACKOFF_SETTLE_TOLERANCE_DEG = 0.02f;
 // Normal motion may use this fraction of the clearance measured by G28. The
 // remainder stays between a commanded target and the detected physical stop.
 constexpr float HOMING_USABLE_CLEARANCE_FRACTION = 0.75f;
-// NOT IMPLEMENTED YET: constexpr float HOMING_FINISH_POS = 0.5f;        // in rad
+// A temporary field offset makes the first feedback command identical to the
+// field already holding the rotor. It then decays to zero while feedback holds
+// the fresh encoder target. These are electrical degrees except where noted.
+constexpr float HOMING_HANDOVER_FIELD_RATE_DEG_S = 60.0f;
+constexpr float HOMING_HANDOVER_MAX_POSITION_ERROR_DEG = 0.5f;
+constexpr float HOMING_HANDOVER_SETTLE_TOLERANCE_DEG = 0.05f;
+constexpr uint32_t HOMING_HANDOVER_SETTLE_MS = 200;
+constexpr uint32_t HOMING_HANDOVER_TIMEOUT_MS = 5000;
+// After the field handover, move every selected joint to a common calibrated
+// position with enough room for a full 1 mm Cartesian jog in every direction.
+constexpr float HOMING_FINISH_POSITION_DEG = 7.0f;
+constexpr float HOMING_FINISH_VELOCITY_DEG_S = 3.0f;
+constexpr float HOMING_FINISH_MAX_TRACKING_ERROR_DEG = 1.0f;
+constexpr float HOMING_FINISH_SETTLE_TOLERANCE_DEG = 0.05f;
+constexpr uint32_t HOMING_FINISH_SETTLE_MS = 200;
+constexpr uint32_t HOMING_FINISH_TIMEOUT_MS = 5000;
+static_assert(HOMING_MEASURED_BACKOFF_ANGLE_DEG > CALIBRATION_BACKOFF_CLEARANCE_DEG,
+              "Normal Home must finish beyond calibration's starting point");
+static_assert(HOMING_MEASURED_BACKOFF_ANGLE_DEG <= HOMING_BACKOFF_MAX_CLEARANCE_DEG,
+              "Normal Home clearance exceeds its measured safety bound");
 
 //--- CALIBRATION -------------------------------------------------------------
 
 // degrees from home position
 constexpr float CALIBRATION_RANGE = 83; 
+static_assert(HOMING_FINISH_POSITION_DEG > 0.0f &&
+              HOMING_FINISH_POSITION_DEG < CALIBRATION_RANGE,
+              "Post-Home target must be inside the calibrated motor range");
 
 // The physical Home side uses the measured G28 clearance above. The other side
 // has no measured stop reference and retains a fixed calibration-domain margin.

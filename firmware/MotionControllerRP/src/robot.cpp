@@ -535,10 +535,13 @@ bool Robot::finish_homing_handover(
       bool in_soft_range = valid_limits &&
                            positions[i] >= lower-tolerance &&
                            positions[i] <= upper+tolerance;
+      // The transition makes an already-valid handover gradual. It must not
+      // conceal a calibration reference that fails the existing phase guard.
+      bool phase_restart_allowed = fabsf(mismatch) <= 75.0f*Constants::DEG2RAD;
       if(servo->get_encoder().get_status() != 0 || !in_lut ||
          !in_soft_range ||
          !std::isfinite(positions[i]) || !std::isfinite(mismatch) ||
-         fabsf(mismatch) > 75.0f*Constants::DEG2RAD) {
+         !phase_restart_allowed) {
         LOG_INFO("HOME GUARD: axis %i refused; in_lut=%i soft_range=%i mismatch_deg=%f", i+1,
                  int(in_lut), int(in_soft_range), mismatch*Constants::RAD2DEG);
         joint->is_homed = false;
@@ -570,9 +573,211 @@ bool Robot::finish_homing_handover(
   spin_unlock_unsafe(shared_data.lock);
   // FK only: an IK round trip must not replace the measured joint targets.
   current_pose = measured_pose;
-  for(int i=0; i<NUM_JOINTS; ++i)
-    joints[i]->servo_controller->set_motor_update_enabled(enabled[i], &positions[i]);
+  for(int i=0; i<NUM_JOINTS; ++i) {
+    #ifdef HOMING_TRANSITIONAL_FIELD_HANDOVER
+      if(enabled[i] && ((joint_mask>>i)&1))
+        joints[i]->servo_controller->start_homing_handover(positions[i]);
+      else
+    #endif
+        joints[i]->servo_controller->set_motor_update_enabled(enabled[i], &positions[i]);
+  }
   return restart_ok;
+}
+
+bool Robot::wait_for_homing_handover(uint8_t joint_mask) {
+  #ifndef HOMING_TRANSITIONAL_FIELD_HANDOVER
+    (void)joint_mask;
+    return true;
+  #else
+  const uint64_t deadline = time_us_64() +
+                            (HOMING_HANDOVER_TIMEOUT_MS+500)*1000ULL;
+  bool successful = false;
+  while(time_us_64() < deadline) {
+    bool any_active = false, any_failed = false, all_complete = true;
+    spin_lock_unsafe_blocking(joints_spin_lock);
+    for(int i=0; i<NUM_JOINTS; ++i) {
+      if(((joint_mask>>i)&1) == 0) continue;
+      const auto& status = joints[i]->servo_controller->get_homing_handover_status();
+      any_active |= status.active;
+      any_failed |= status.failed;
+      all_complete &= status.complete;
+    }
+    spin_unlock_unsafe(joints_spin_lock);
+    if(any_failed) break;
+    if(!any_active && all_complete) {
+      successful = true;
+      break;
+    }
+    sleep_ms(1);
+  }
+
+  spin_lock_unsafe_blocking(joints_spin_lock);
+  for(int i=0; i<NUM_JOINTS; ++i) {
+    if(((joint_mask>>i)&1) == 0) continue;
+    auto* servo = joints[i]->servo_controller;
+    const auto& status = servo->get_homing_handover_status();
+    LOG_INFO("HOME HANDOVER: axis %i initial_deg=%f final_deg=%f max_error_deg=%f",
+             i+1, status.initial_field_offset*Constants::RAD2DEG,
+             status.field_offset*Constants::RAD2DEG,
+             status.max_position_error*Constants::RAD2DEG);
+    if(!successful || status.failed || !status.complete) {
+      LOG_ERROR("HOME HANDOVER: axis %i transition failed or timed out", i+1);
+      joints[i]->is_homed = false;
+      joint_home_references[i] = JointHomeReference{};
+      servo->set_motor_update_enabled(false);
+      servo->set_motor_enabled(false, false);
+    }
+  }
+  spin_unlock_unsafe(joints_spin_lock);
+  return successful;
+  #endif
+}
+
+bool Robot::move_to_homing_finish_position(uint8_t joint_mask) {
+  constexpr uint32_t update_interval_ms = 2;
+  const float finish_position = HOMING_FINISH_POSITION_DEG*Constants::DEG2RAD;
+  const float finish_velocity = HOMING_FINISH_VELOCITY_DEG_S*Constants::DEG2RAD;
+  const float max_tracking_error =
+    HOMING_FINISH_MAX_TRACKING_ERROR_DEG*Constants::DEG2RAD;
+  const float settle_tolerance =
+    HOMING_FINISH_SETTLE_TOLERANCE_DEG*Constants::DEG2RAD;
+  float starts[NUM_JOINTS], targets[NUM_JOINTS], target_velocities[NUM_JOINTS]{};
+  float max_error[NUM_JOINTS]{};
+  float max_distance = 0.0f;
+  bool valid = std::isfinite(finish_position) && std::isfinite(finish_velocity) &&
+               finish_velocity > 0.0f;
+
+  spin_lock_unsafe_blocking(joints_spin_lock);
+  for(int i=0; i<NUM_JOINTS; ++i) {
+    auto* servo = joints[i]->servo_controller;
+    starts[i] = servo->read_position();
+    targets[i] = starts[i];
+    if(((joint_mask>>i)&1) == 0) continue;
+
+    float lower, upper;
+    targets[i] = finish_position;
+    valid &= joints[i]->is_homed && joints[i]->is_calibrated &&
+             servo->get_encoder().get_status() == 0 &&
+             std::isfinite(starts[i]) &&
+             servo->get_pos_to_field_lut().in_input_range(finish_position) &&
+             calculate_joint_travel_limit(i, joint_home_references[i], lower, upper) &&
+             finish_position >= lower && finish_position <= upper;
+    max_distance = std::max(max_distance, fabsf(finish_position-starts[i]));
+  }
+  spin_unlock_unsafe(joints_spin_lock);
+
+  Pose6DF finish_pose;
+  valid &= kinematic_model->foreward(targets, finish_pose);
+
+  auto fail = [&]() {
+    float stopped_positions[NUM_JOINTS];
+    spin_lock_unsafe_blocking(joints_spin_lock);
+    for(int i=0; i<NUM_JOINTS; ++i)
+      stopped_positions[i] = joints[i]->servo_controller->read_position();
+    spin_lock_unsafe_blocking(shared_data.lock);
+    for(int i=0; i<NUM_JOINTS; ++i) {
+      if(((joint_mask>>i)&1) == 0) continue;
+      shared_data.joint_target_positions[i] = stopped_positions[i];
+      shared_data.joint_target_velocities[i] = 0.0f;
+      planned_joint_positions[i] = stopped_positions[i];
+      joints[i]->is_homed = false;
+      joint_home_references[i] = JointHomeReference{};
+      joints[i]->servo_controller->set_motor_update_enabled(false);
+      joints[i]->servo_controller->set_motor_enabled(false, false);
+    }
+    spin_unlock_unsafe(shared_data.lock);
+    spin_unlock_unsafe(joints_spin_lock);
+    return false;
+  };
+
+  if(!valid) {
+    LOG_ERROR("HOME FINISH: target is outside a calibrated Home-derived range");
+    return fail();
+  }
+
+  float duration_s = max_distance/finish_velocity;
+  uint32_t steps = std::max<uint32_t>(
+    1, uint32_t(ceilf(duration_s*1000.0f/update_interval_ms)));
+  duration_s = steps*update_interval_ms*0.001f;
+  for(int i=0; i<NUM_JOINTS; ++i)
+    if((joint_mask>>i)&1)
+      target_velocities[i] = (targets[i]-starts[i])/duration_s;
+
+  bool tracking_ok = true;
+  for(uint32_t step=1; step<=steps && tracking_ok; ++step) {
+    float fraction = float(step)/float(steps);
+    float commands[NUM_JOINTS];
+    spin_lock_unsafe_blocking(shared_data.lock);
+    for(int i=0; i<NUM_JOINTS; ++i) {
+      commands[i] = ((joint_mask>>i)&1)
+        ? starts[i] + fraction*(targets[i]-starts[i]) : targets[i];
+      shared_data.joint_target_positions[i] = commands[i];
+      shared_data.joint_target_velocities[i] = target_velocities[i];
+    }
+    spin_unlock_unsafe(shared_data.lock);
+    sleep_ms(update_interval_ms);
+
+    spin_lock_unsafe_blocking(joints_spin_lock);
+    for(int i=0; i<NUM_JOINTS; ++i) {
+      if(((joint_mask>>i)&1) == 0) continue;
+      auto* servo = joints[i]->servo_controller;
+      float error = fabsf(commands[i]-servo->get_position());
+      max_error[i] = std::max(max_error[i], error);
+      tracking_ok &= servo->get_encoder().get_status() == 0 &&
+                     std::isfinite(error) && error <= max_tracking_error;
+    }
+    spin_unlock_unsafe(joints_spin_lock);
+  }
+
+  spin_lock_unsafe_blocking(shared_data.lock);
+  for(int i=0; i<NUM_JOINTS; ++i) {
+    if(((joint_mask>>i)&1) == 0) continue;
+    shared_data.joint_target_positions[i] = targets[i];
+    shared_data.joint_target_velocities[i] = 0.0f;
+  }
+  spin_unlock_unsafe(shared_data.lock);
+
+  uint64_t begin = time_us_64(), stable_since = 0;
+  while(tracking_ok && time_us_64()-begin < HOMING_FINISH_TIMEOUT_MS*1000ULL) {
+    bool settled = true;
+    spin_lock_unsafe_blocking(joints_spin_lock);
+    for(int i=0; i<NUM_JOINTS; ++i) {
+      if(((joint_mask>>i)&1) == 0) continue;
+      auto* servo = joints[i]->servo_controller;
+      float error = fabsf(targets[i]-servo->get_position());
+      max_error[i] = std::max(max_error[i], error);
+      tracking_ok &= servo->get_encoder().get_status() == 0 &&
+                     std::isfinite(error) && error <= max_tracking_error;
+      settled &= error <= settle_tolerance;
+    }
+    spin_unlock_unsafe(joints_spin_lock);
+    uint64_t now = time_us_64();
+    if(settled) {
+      if(stable_since == 0) stable_since = now;
+      if(now-stable_since >= HOMING_FINISH_SETTLE_MS*1000ULL) break;
+    } else {
+      stable_since = 0;
+    }
+    sleep_ms(update_interval_ms);
+  }
+
+  bool successful = tracking_ok && stable_since != 0 &&
+                    time_us_64()-stable_since >= HOMING_FINISH_SETTLE_MS*1000ULL;
+  for(int i=0; i<NUM_JOINTS; ++i) {
+    if(((joint_mask>>i)&1) == 0) continue;
+    LOG_INFO("HOME FINISH: axis %i target_deg=%f max_error_deg=%f",
+             i+1, targets[i]*Constants::RAD2DEG,
+             max_error[i]*Constants::RAD2DEG);
+  }
+  if(!successful) {
+    LOG_ERROR("HOME FINISH: calibrated target move failed or timed out");
+    return fail();
+  }
+
+  for(int i=0; i<NUM_JOINTS; ++i)
+    planned_joint_positions[i] = targets[i];
+  current_pose = finish_pose;
+  return true;
 }
 
 bool Robot::home(uint8_t joint_mask, float retract_angles[NUM_JOINTS]) {
@@ -682,6 +887,13 @@ bool Robot::home(uint8_t joint_mask, float retract_angles[NUM_JOINTS]) {
   // servo updates may continue here
   spin_unlock_unsafe(joints_spin_lock);
 
+  #if defined(HOMING_TRANSITIONAL_FIELD_HANDOVER) && !defined(HOMING_TEST_SKIP_SERVO_RESTART)
+    if(homing_successful && restart_ok)
+      restart_ok = wait_for_homing_handover(joint_mask);
+    if(homing_successful && restart_ok)
+      restart_ok = move_to_homing_finish_position(joint_mask);
+  #endif
+
   // get pose from joint angles
   #ifndef HOMING_ENCODER_BACKOFF
   set_pose(pose_from_joint_angles(), false);
@@ -781,8 +993,9 @@ bool Robot::calibrate_joint(int joint_idx, bool store_calibration, bool print_me
   // joint->servo_controller->move_to_open_loop(0.05f, 1.0);
   shared_data.joint_target_positions[joint_idx] = 0; // joint->servo_controller->read_position();
 
-  if(store_calibration)
-    joint->store_calibration();
+  bool storage_ok = !store_calibration || joint->store_calibration();
+  if(!storage_ok)
+    LOG_ERROR("Joint-%i: failed to store calibration files", joint_idx);
 
   // servo updates may continue here
   spin_unlock_unsafe(joints_spin_lock);
@@ -803,7 +1016,7 @@ bool Robot::calibrate_joint(int joint_idx, bool store_calibration, bool print_me
   // check if all joints are ready
   all_joints_ready = check_all_joints_ready();
 
-  return restart_ok;
+  return storage_ok && restart_ok;
 }
 
 //--- G-Code Commands -------------------------------------------------------------------

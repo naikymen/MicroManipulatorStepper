@@ -29,6 +29,8 @@ void spin_lock_unsafe_blocking(int) {}
 void spin_unlock_unsafe(int) {}
 constexpr float CALIBRATION_RANGE = 83.0f;
 constexpr float HOMING_USABLE_CLEARANCE_FRACTION = 0.75f;
+constexpr float HOMING_MEASURED_BACKOFF_ANGLE_DEG = 2.5f;
+constexpr float HOMING_FINISH_POSITION_DEG = 7.0f;
 constexpr float JOINT_OPPOSITE_TRAVEL_MARGIN_DEG = 0.5f;
 constexpr float JOINT_LIMIT_NUMERIC_TOLERANCE_DEG = 0.0001f;
 enum class ERobotState { IDLE, EXECUTING_PATH };
@@ -137,31 +139,40 @@ int main() {
   std::reverse(robot.storage[0].servo.encoder.entries.begin(), robot.storage[0].servo.encoder.entries.end());
   assert(robot.update_travel_limits());
 
-  // Reproduce the captured post-Home geometry with 1.5 degrees of verified
-  // clearance. Each inward 1 mm request is accepted in full, never shortened.
+  // Calibration starts after its own stop clearance, so a Home ending near
+  // zero cannot support a 1 mm Cartesian jog in every direction: delta
+  // kinematics may need one joint to move roughly six degrees toward Home.
+  // The post-Home 7-degree target provides that room without extrapolating a
+  // lookup table or shortening the requested Cartesian displacement.
   for(int axis=0; axis<NUM_JOINTS; ++axis) {
-    Robot jog;
-    float home[NUM_JOINTS]{1.595814f*Constants::DEG2RAD,
-                           1.666317f*Constants::DEG2RAD,
-                           2.246254f*Constants::DEG2RAD};
-    for(int i=0; i<NUM_JOINTS; ++i) {
-      jog.joint_home_references[i].final_position = home[i];
-      jog.joint_home_references[i].measured_clearance = 1.5f*Constants::DEG2RAD;
+    for(float direction : {-1.0f, 1.0f}) {
+      Robot jog;
+      float finish[NUM_JOINTS]{
+        HOMING_FINISH_POSITION_DEG*Constants::DEG2RAD,
+        HOMING_FINISH_POSITION_DEG*Constants::DEG2RAD,
+        HOMING_FINISH_POSITION_DEG*Constants::DEG2RAD
+      };
+      for(int i=0; i<NUM_JOINTS; ++i) {
+        jog.storage[i].servo.field.lower = 0.026827f*Constants::DEG2RAD;
+        jog.joint_home_references[i].final_position = 1.0f*Constants::DEG2RAD;
+        jog.joint_home_references[i].measured_clearance =
+          HOMING_MEASURED_BACKOFF_ANGLE_DEG*Constants::DEG2RAD;
+      }
+      assert(jog.model.foreward(finish, jog.current_pose));
+      Pose6DF requested = jog.current_pose;
+      float& coordinate = axis==0 ? requested.translation.x :
+                          axis==1 ? requested.translation.y : requested.translation.z;
+      coordinate += direction;
+      std::string command = "G0 X" + std::to_string(requested.translation.x) +
+                            " Y" + std::to_string(requested.translation.y) +
+                            " Z" + std::to_string(requested.translation.z) + " F5";
+      assert(cmd.from_command_str(command.c_str()) == GCodeCommand::EParseStatus::OK);
+      jog.process_motion_command(cmd, reply);
+      assert(reply == "ok\n" && jog.path_planner.input_queue_size() == 1);
+      assert(fabsf(jog.current_pose.translation.x-requested.translation.x) < 1e-5f);
+      assert(fabsf(jog.current_pose.translation.y-requested.translation.y) < 1e-5f);
+      assert(fabsf(jog.current_pose.translation.z-requested.translation.z) < 1e-5f);
     }
-    assert(jog.model.foreward(home, jog.current_pose));
-    Pose6DF requested = jog.current_pose;
-    float& coordinate = axis==0 ? requested.translation.x :
-                        axis==1 ? requested.translation.y : requested.translation.z;
-    coordinate += 1.0f;
-    std::string command = "G0 X" + std::to_string(requested.translation.x) +
-                          " Y" + std::to_string(requested.translation.y) +
-                          " Z" + std::to_string(requested.translation.z) + " F5";
-    assert(cmd.from_command_str(command.c_str()) == GCodeCommand::EParseStatus::OK);
-    jog.process_motion_command(cmd, reply);
-    assert(reply == "ok\n" && jog.path_planner.input_queue_size() == 1);
-    assert(fabsf(jog.current_pose.translation.x-requested.translation.x) < 1e-5f);
-    assert(fabsf(jog.current_pose.translation.y-requested.translation.y) < 1e-5f);
-    assert(fabsf(jog.current_pose.translation.z-requested.translation.z) < 1e-5f);
   }
 
   for(const char* command : {"G0 X10 F100 I", "G1 Y10 F100 I", "G0 Z10 F100 I",

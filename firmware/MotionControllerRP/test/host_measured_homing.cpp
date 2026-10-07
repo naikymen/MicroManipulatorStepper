@@ -92,10 +92,11 @@ struct ServoController {
 int main() {
   auto search = [](HomingController& home, ServoController& servo, bool measured=true,
                    float range=2*Constants::PI_F,
-                   float clearance=HOMING_MEASURED_BACKOFF_ANGLE_DEG*Constants::DEG2RAD) {
+                   float clearance=HOMING_MEASURED_BACKOFF_ANGLE_DEG*Constants::DEG2RAD,
+                   bool raw_encoder_backoff=false) {
     clock_us = 1000;
     home.start(&servo, -.2f, range, .15f, ENCODER_ANGLE_TO_ROTOR_ANGLE,
-               clearance, false, measured);
+               clearance, false, measured, raw_encoder_backoff);
     for(unsigned i=0; !home.is_finished() && i<50000; ++i) { sleep_ms(1); home.update(); }
     assert(home.is_finished());
   };
@@ -108,19 +109,23 @@ int main() {
     home.finalize();
     assert(home.is_successful());
     assert(servo.driver.rotations == 0); // never fixed-field rotate
-    assert(servo.driver.physical >= 1.499f*Constants::DEG2RAD);
-    assert(servo.driver.physical < 1.52f*Constants::DEG2RAD);
+    assert(servo.driver.physical >=
+           (HOMING_MEASURED_BACKOFF_ANGLE_DEG-.001f)*Constants::DEG2RAD);
+    assert(servo.driver.physical <
+           (HOMING_MEASURED_BACKOFF_ANGLE_DEG+.02f)*Constants::DEG2RAD);
     float clearance, away_sign;
     assert(home.get_measured_clearance_at_raw(
         servo.encoder.read_abs_angle_raw(), clearance, away_sign));
-    assert(clearance >= 1.499f*Constants::DEG2RAD && away_sign == 1.0f);
+    assert(clearance >=
+           (HOMING_MEASURED_BACKOFF_ANGLE_DEG-.001f)*Constants::DEG2RAD &&
+           away_sign == 1.0f);
     assert(servo.driver.amplitude == .3f);
     auto writes = servo.driver.writes;
     home.finalize();
     assert(servo.driver.writes == writes);
     assert(servo.enc_lut.a == 83*Constants::DEG2RAD && servo.enc_lut.b == 0);
   }
-  puts("PASS: actual backoff verifies minimal calibrated clearance across different stop phase lags.");
+  puts("PASS: normal Home verifies clearance beyond the calibration origin across different stop phase lags.");
   {
     ServoController servo;
     servo.encoder.origin = servo.encoder.raw = 2; // cross zero while backing off
@@ -151,6 +156,22 @@ int main() {
   puts("PASS: frozen/reversed/faulty/noisy encoder and restore displacement cannot falsely certify home.");
   {
     ServoController servo;
+    // Calibration must not consume the existing LUT. Make it deliberately
+    // unusable and verify raw encoder travel still establishes the origin.
+    servo.enc_lut.monotonic=false;
+    HomingController home;
+    search(home, servo, true, 2*Constants::PI_F,
+           CALIBRATION_BACKOFF_CLEARANCE_DEG*Constants::DEG2RAD, true);
+    home.finalize();
+    assert(home.is_successful());
+    assert(servo.driver.rotations == 0);
+    assert(servo.driver.physical >= 1.499f*Constants::DEG2RAD);
+    assert(servo.driver.physical < 1.52f*Constants::DEG2RAD);
+    assert(servo.driver.amplitude == .3f);
+  }
+  puts("PASS: calibration establishes its origin from measured raw travel without using a saved LUT.");
+  {
+    ServoController servo;
     servo.driver.follows_search=true;
     HomingController home;
     search(home, servo, true, .03f);
@@ -178,5 +199,5 @@ int main() {
     assert(home.is_successful() && servo.driver.rotations == 1);
     assert(fabsf(servo.driver.field-stop_field-.5f*Constants::PI_F)<1e-6f);
   }
-  puts("PASS: timeout is terminal; invalid domains fail before motion; calibration keeps its original 90-degree field backoff.");
+  puts("PASS: timeout is terminal; invalid G28 domains fail before motion; legacy fixed-field mode remains available.");
 }

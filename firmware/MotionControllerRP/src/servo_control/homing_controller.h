@@ -31,7 +31,7 @@ class HomingController {
     // @param search_range_angle: search range angle for finding the endstop 
     // @param current: motor current factor used during homing, in range [0..1]
     // @param encoder_angle_to_motor_angle: conversion factor from encoder angle to motor angle
-    // @param retract_angle_rad: retract angle after homing, default is used if negative values are provided 
+    // @param retract_angle_rad: encoder-measured calibration clearance
     bool run_blocking(ServoController* servo_controller, 
                       float motor_velocity, 
                       float search_range_angle, 
@@ -41,9 +41,9 @@ class HomingController {
                       
     // Starts a non blocking homing cycle, motor_velocity can be negative and defines the homing direction.
     // WARNING: Servo loop updates (including encoder reads) must be completely disabled during homing.
-    // Same parameters as run_blocking; the final opt-in diagnostic parameter
-    // restores amplitude before backoff. The last parameter selects verified
-    // encoder backoff for G28; run_blocking/calibration retain the original path.
+    // Same parameters as run_blocking. The optional parameters select current
+    // ordering, encoder-verified backoff, and a calibration-only raw-encoder
+    // mode which does not require lookup tables that have not been measured yet.
     void start(ServoController* servo_controller, 
                float motor_velocity, 
                float search_range, 
@@ -51,7 +51,8 @@ class HomingController {
                float encoder_angle_to_motor_angle,
                float retract_angle_rad=-1.0f,
                bool restore_amplitude_before_backoff=false,
-               bool measured_backoff=false);
+               bool measured_backoff=false,
+               bool raw_encoder_backoff=false);
 
     void update();
     void finalize();
@@ -94,6 +95,7 @@ class HomingController {
     float initial_current = 0.0f;
     bool restore_before_backoff = false;
     bool use_measured_backoff = false;
+    bool use_raw_encoder_backoff = false;
     bool finalized = false;
     float encoder_to_motor_angle = 0.0f;
     float requested_clearance = 0.0f;

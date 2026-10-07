@@ -73,11 +73,13 @@ struct Lut {
   void get_intput_range(float& a, float& b) const { a=min; b=max; }
 };
 struct Servo {
+  struct HandoverStatus { bool active=false, complete=false, failed=false; } handover;
   Encoder encoder;
   Driver driver;
   Lut field_lut, enc_lut;
   float measured = 0, reference_bias = 0;
   bool enabled = false;
+  bool handover_started = false;
   Servo() { enc_lut.raw_input = true; }
   Encoder& get_encoder() { return encoder; }
   Driver& get_motor_driver() { return driver; }
@@ -89,6 +91,12 @@ struct Servo {
     assert(held_locks == std::vector<int>{1});
     enabled=enable;
     if(enable) { assert(pos); measured=*pos; }
+  }
+  void start_homing_handover(float pos) {
+    assert(held_locks == std::vector<int>{1});
+    enabled=true;
+    handover_started=true;
+    measured=pos;
   }
 };
 struct Joint {
@@ -135,6 +143,11 @@ int main() {
     auto& servo = robot.storage[i].servo;
     assert(servo.encoder.reads==1 && servo.encoder.raw==1001);
     assert(servo.enabled && servo.measured==.01f);
+    #ifdef HOMING_TRANSITIONAL_FIELD_HANDOVER
+      assert(servo.handover_started);
+    #else
+      assert(!servo.handover_started);
+    #endif
     assert(robot.shared_data.joint_target_positions[i]==servo.measured);
     assert(robot.shared_data.joint_target_velocities[i]==0);
     assert(robot.planned_joint_positions[i]==servo.measured);
@@ -179,5 +192,5 @@ int main() {
   missing_home[1].valid=false;
   assert(!finish(missing, missing_home));
   assert(!missing.storage[1].is_homed && !missing.joint_home_references[1].valid);
-  puts("PASS: phase mismatch, encoder fault, unsafe final position and invalid FK refuse restart without changing held field.");
+  puts("PASS: phase mismatch, encoder fault, unsafe final position and invalid FK refuse restart before any transition.");
 }

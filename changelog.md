@@ -1,5 +1,42 @@
 # Changelog
 
+## Make calibration and Home finish at verified, usable positions
+
+- Establish calibration's measurement origin only after raw encoder movement
+  confirms 1.5 motor-shaft degrees of clearance from the physical stop. Keep
+  the reduced homing drive strength during that move and restore normal drive
+  strength afterward. Calibration no longer assumes that a fixed field
+  rotation after a stall produced the same shaft rotation.
+- Back normal Home 2.5 motor-shaft degrees from the stop so its first feedback
+  position is inside, rather than directly on the edge of, the saved
+  calibration table.
+- Keep the existing 75-electrical-degree validation limit. For an accepted
+  Home, preserve the already-applied field on the first feedback update, then
+  remove only that temporary difference at 60 electrical degrees per second
+  while holding the fresh encoder measurement as the target. The temporary
+  difference reaches zero and is neither saved nor retained as another
+  calibration offset.
+- After the handover, move every selected joint smoothly to exactly 7 calibrated
+  motor-shaft degrees. Monitor encoder health and tracking, and fail Home on a
+  one-degree tracking excursion, invalid target range, or timeout. This places
+  the stage where the current delta geometry can perform a full 1 mm jog in all
+  six Cartesian directions without lookup-table extrapolation or shortening
+  the requested move.
+- Correct the earlier regression, which exercised only positive Cartesian
+  directions from an unrealistic mocked Home position. The updated tests cover
+  both directions of X, Y, and Z from the real post-Home target, plus invalid
+  calibration range, encoder failure, tracking failure, transition completion,
+  and calibration without a pre-existing lookup table.
+- Propagate calibration-file write failures instead of reporting successful
+  saved calibration when persistence failed. Keep the optional RAM-versus-saved
+  calibration comparison isolated from normal firmware.
+- The bounded field transition passed 20 consecutive device Homes before the
+  post-Home position move was added: every temporary difference reached zero,
+  the largest measured shaft-position error was 0.013138 degrees, and the final
+  observed Home had no snap. The new 2.5-degree backoff and 7-degree finish move
+  have passed host regressions and firmware builds but still require a later
+  device test.
+
 ## Explain the normal homing flow
 
 - Replace temporary implementation and working-tree records with one durable,

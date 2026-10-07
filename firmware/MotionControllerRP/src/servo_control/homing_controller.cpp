@@ -23,7 +23,7 @@ bool HomingController::run_blocking(ServoController* servo_controller,
                                     float retract_angle_rad)
 {
   start(servo_controller, motor_velocity, search_range_angle, current, 
-        encoder_angle_to_motor_angle, retract_angle_rad);
+        encoder_angle_to_motor_angle, retract_angle_rad, false, true, true);
 
   while(is_finished() == false) {
     update();
@@ -40,10 +40,12 @@ void HomingController::start(ServoController* servo_controller,
                             float encoder_angle_to_motor_angle,
                             float retract_angle_rad,
                             bool restore_amplitude_before_backoff,
-                            bool measured_backoff)
+                            bool measured_backoff,
+                            bool raw_encoder_backoff)
 {
   restore_before_backoff = restore_amplitude_before_backoff;
   use_measured_backoff = measured_backoff;
+  use_raw_encoder_backoff = raw_encoder_backoff;
   finalized = false;
   field_angle_offset = last_eval_field_angle_offset = 0.0f;
   search_failed = false;
@@ -64,31 +66,42 @@ void HomingController::start(ServoController* servo_controller,
        !std::isfinite(pole_pair_count) || pole_pair_count <= 0.0f ||
        !std::isfinite(encoder_to_motor_angle) || encoder_to_motor_angle <= 0.0f ||
        !std::isfinite(requested_clearance) || requested_clearance <= 0.0f ||
-       requested_clearance > HOMING_BACKOFF_MAX_CLEARANCE_DEG*Constants::DEG2RAD ||
-       enc_lut.size() < 2 || field_lut.size() < 2 || !enc_lut.is_monotonic()) {
+       requested_clearance > HOMING_BACKOFF_MAX_CLEARANCE_DEG*Constants::DEG2RAD) {
       LOG_ERROR("HOME BACKOFF: invalid parameters or calibration domain");
       search_failed = true;
       state = State::Failed;
       return;
     }
-    float field_min, field_max;
-    field_lut.get_intput_range(field_min, field_max);
-    float a = enc_lut.get_entry(0), b = enc_lut.get_entry(enc_lut.size()-1);
-    trusted_position_min = std::max(0.0f, std::max(std::min(a,b), field_min));
-    trusted_position_max = std::min(CALIBRATION_RANGE*Constants::DEG2RAD,
-                                    std::min(std::max(a,b), field_max));
-    if(!std::isfinite(a) || !std::isfinite(b) || a == b ||
-       !std::isfinite(field_min) || !std::isfinite(field_max) || field_min >= field_max ||
-       !std::isfinite(trusted_position_min) || !std::isfinite(trusted_position_max) ||
-       trusted_position_min >= trusted_position_max) {
-      LOG_ERROR("HOME BACKOFF: invalid calibrated travel interval");
-      search_failed = true;
-      state = State::Failed;
-      return;
+    if(use_raw_encoder_backoff) {
+      // Calibration has no trustworthy LUT yet. Establish encoder polarity
+      // from the first measurable response to the commanded away-from-stop
+      // field motion in read_backoff_position().
+      encoder_backoff_direction = 0.0f;
+    } else {
+      if(enc_lut.size() < 2 || field_lut.size() < 2 || !enc_lut.is_monotonic()) {
+        LOG_ERROR("HOME BACKOFF: invalid parameters or calibration domain");
+        search_failed = true;
+        state = State::Failed;
+        return;
+      }
+      float field_min, field_max;
+      field_lut.get_intput_range(field_min, field_max);
+      float a = enc_lut.get_entry(0), b = enc_lut.get_entry(enc_lut.size()-1);
+      trusted_position_min = std::max(0.0f, std::max(std::min(a,b), field_min));
+      trusted_position_max = std::min(CALIBRATION_RANGE*Constants::DEG2RAD,
+                                      std::min(std::max(a,b), field_max));
+      if(!std::isfinite(a) || !std::isfinite(b) || a == b ||
+         !std::isfinite(field_min) || !std::isfinite(field_max) || field_min >= field_max ||
+         !std::isfinite(trusted_position_min) || !std::isfinite(trusted_position_max) ||
+         trusted_position_min >= trusted_position_max) {
+        LOG_ERROR("HOME BACKOFF: invalid calibrated travel interval");
+        search_failed = true;
+        state = State::Failed;
+        return;
+      }
+      // The LUT identifies encoder polarity for normal G28.
+      encoder_backoff_direction = (b > a ? 1.0f : -1.0f) * (velocity < 0 ? 1.0f : -1.0f);
     }
-    // The LUT identifies encoder polarity. Do not guess it from a stalled
-    // encoder at startup, and do not change the calibration's unwrap convention.
-    encoder_backoff_direction = (b > a ? 1.0f : -1.0f) * (velocity < 0 ? 1.0f : -1.0f);
     away_from_stop_sign = velocity < 0 ? 1.0f : -1.0f;
   }
 
@@ -302,15 +315,36 @@ bool HomingController::read_backoff_position(float& clearance, float& position, 
     return false;
   }
   // int64 subtraction avoids overflow; reads remain unwrapped across periods.
-  clearance = float(int64_t(raw)-int64_t(home_raw)) * encoder_backoff_direction *
-              (Constants::TWO_PI_F / float(encoder.get_rawcounts_per_rev())) * encoder_to_motor_angle;
+  float signed_travel = float(int64_t(raw)-int64_t(home_raw)) *
+                        (Constants::TWO_PI_F / float(encoder.get_rawcounts_per_rev())) *
+                        encoder_to_motor_angle;
   const float tolerance = HOMING_BACKOFF_SETTLE_TOLERANCE_DEG*Constants::DEG2RAD;
+  if(use_raw_encoder_backoff && encoder_backoff_direction == 0.0f) {
+    // At a hard stop the shaft cannot respond in the wrong mechanical
+    // direction. Ignore sub-tolerance encoder noise and learn polarity only
+    // once real away-from-stop movement is visible.
+    if(fabsf(signed_travel) <= tolerance) {
+      clearance = 0.0f;
+      position = 0.0f;
+      in_range = true;
+      return true;
+    }
+    encoder_backoff_direction = signed_travel > 0.0f ? 1.0f : -1.0f;
+  }
+  clearance = signed_travel * encoder_backoff_direction;
   if(!std::isfinite(clearance) || clearance < -tolerance ||
      clearance > HOMING_BACKOFF_MAX_CLEARANCE_DEG*Constants::DEG2RAD + tolerance) {
     LOG_ERROR("HOME BACKOFF: wrong direction or excessive measured travel");
     return false;
   }
-  // No extrapolation is allowed to certify backoff completion.
+  if(use_raw_encoder_backoff) {
+    // Raw travel is the only available position reference while creating the
+    // first calibration table. The maximum and settling checks still apply.
+    position = clearance;
+    in_range = true;
+    return true;
+  }
+  // No LUT extrapolation is allowed to certify normal G28 completion.
   in_range = servo_ctrl->get_enc_to_pos_lut().in_input_range(raw);
   position = in_range ? servo_ctrl->encoder_angle_to_motor_pos(raw) : 0.0f;
   if(in_range && !std::isfinite(position)) return false;

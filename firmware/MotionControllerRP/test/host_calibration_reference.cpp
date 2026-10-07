@@ -4,6 +4,7 @@
 #include <vector>
 constexpr int NUM_JOINTS = 3;
 #define LOG_INFO(...) ((void)0)
+#define LOG_ERROR(...) ((void)0)
 void spin_lock_unsafe_blocking(int) {}
 void spin_unlock_unsafe(int) {}
 struct Servo {};
@@ -16,8 +17,9 @@ struct RobotJoint {
   Servo* servo_controller = &servo;
   bool success = true;
   int measurements = 0, saves = 0;
+  bool save_success = true;
   bool calibrate(bool) { measurements++; return success; }
-  void store_calibration() { saves++; }
+  bool store_calibration() { saves++; return save_success; }
 };
 class Robot {
 public:
@@ -72,5 +74,9 @@ int main() {
   Robot saved;
   assert(saved.calibrate_joint(2, true, false));
   assert(saved.storage[2].saves == 1); // Saving requires explicit request.
-  puts("PASS: actual calibration isolates the selected axis, preserves flash without S, skips diagnostic restart, preserves normal refusal handling.");
+  Robot save_failed;
+  save_failed.storage[2].save_success = false;
+  assert(!save_failed.calibrate_joint(2, true, false));
+  assert(save_failed.storage[2].saves == 1);
+  puts("PASS: actual calibration isolates the selected axis, preserves flash without S, reports save failures, skips diagnostic restart, preserves normal refusal handling.");
 }

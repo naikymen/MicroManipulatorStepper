@@ -104,6 +104,8 @@ class Robot : public ICommandProcessor {
     bool finish_homing_handover(bool enable_feedback,
                                 HomingController homing_controllers[NUM_JOINTS],
                                 uint8_t joint_mask);
+    bool wait_for_homing_handover(uint8_t joint_mask);
+    bool move_to_homing_finish_position(uint8_t joint_mask);
     JointHomeReference joint_home_references[NUM_JOINTS];
     JointTravelLimits joint_limits;
     std::string last_pose_error;

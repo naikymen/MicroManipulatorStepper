@@ -83,6 +83,23 @@ class ServoController {
     // PID/history initialization use exactly the same encoder sample.
     void set_motor_update_enabled(bool enable, const float* measured_position=nullptr);
 
+    struct HomingHandoverStatus {
+      bool active = false;
+      bool complete = false;
+      bool failed = false;
+      float initial_field_offset = 0.0f;
+      float field_offset = 0.0f;
+      float max_position_error = 0.0f;
+      float elapsed_s = 0.0f;
+    };
+    // Starts a temporary, bounded transition from the held homing field to the
+    // saved calibration relationship. Caller supplies the same fresh encoder
+    // position already published as the servo target.
+    void start_homing_handover(float measured_position);
+    const HomingHandoverStatus& get_homing_handover_status() const {
+      return homing_handover;
+    }
+
     // enable or disable encoder reads
     void set_encoder_update_enabled(bool enable);
 
@@ -154,6 +171,11 @@ class ServoController {
     float pos_error = 0;                  // current position error as computed by upate()
     float velocity = 0;                   // current velocity estimate
     float output = 0.0f;                  // servo loop output (field angle offset)
+    // Optional diagnostic offset between the saved calibration's field origin
+    // and the field that is already holding the rotor after homing.
+    float homing_field_origin_offset = 0.0f;
+    HomingHandoverStatus homing_handover;
+    float homing_handover_stable_s = 0.0f;
     bool motor_update_enabled = false;    // enables mootor field updates
     bool encoder_update_enabled = true;   // enables encoder reads
     #ifdef HOMING_SERVO_PULSE_TEST
