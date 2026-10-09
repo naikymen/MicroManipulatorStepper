@@ -590,6 +590,11 @@ invalid numeric inputs, refusal to re-enable after a fault, and duration-timer
 reset across a feedback pause. They do not establish physical safety or
 detect every possible corrupted encoder reply.
 
+The [idle feedback investigation report](../documentation/firmware/idle_feedback_investigation.md)
+records the communication tests, unsaved calibration comparisons, authorized
+saves, reboot verification, and remaining uncertainties. It distinguishes
+observed failures from possible causes of the original runaway.
+
 ### Restore normal firmware
 
 Build and upload the default `pico` environment again:

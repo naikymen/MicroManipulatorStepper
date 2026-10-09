@@ -1,5 +1,23 @@
 # Changelog
 
+## Record idle-runaway evidence and saved-calibration verification
+
+- Preserve the investigation sequence in one durable report: motor-disabled
+  encoder communication failures, repaired-connector checks, conservative
+  diagnostic cutoff, and fresh-versus-saved calibration comparisons. Separate
+  demonstrated faults from hypotheses; do not claim the original runaway
+  was reproduced or uniquely explained.
+- Record roughly 69/60 electrical-degree reference differences for joints
+  2/3 and the reduction in stationary corrections from roughly -71/-59 to
+  +4/+2 degrees after fresh calibration, with unchanged gains and fitting.
+- Document the user-authorized `M56 J1 S`/`M56 J2 S` saves and successful
+  post-reboot Home, 1 mm XYZ moves and returns, 2 mm Y move, and two 30-second
+  holds with no reported encoder errors or diagnostic faults. Identify
+  temporary raw-log locations without presenting them as durable artifacts.
+- Link the report from the firmware README and record offline cleanup/build
+  coverage. Keep normal firmware unchanged, experimental thresholds explicit,
+  and the last device state separate from the later unflashed source cleanup.
+
 ## Protect diagnostic calibration persistence and compare references
 
 - Add `servo_reference_diagnostic` to combine the feedback recorder with the
