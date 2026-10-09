@@ -1,5 +1,78 @@
 # Changelog
 
+## Relay the Pi camera preview into a local video device
+
+- Add `software/PiCameraService/bridge/pi_camera_v4l2_bridge.py`, a
+  workstation-side tool that relays the MJPEG preview into a `v4l2loopback`
+  device so any Linux application that expects a webcam can use the Pi HQ
+  Camera. Keep it strictly optional and independent: it only reads
+  `/stream.mjpg`, never writes to the Pi, and leaves the daemon, the control
+  endpoints and the still-capture path untouched, because a relayed frame has
+  been through ffmpeg and carries none of the measurement metadata.
+- Refuse to write into a real camera. Only devices the `v4l2loopback` module
+  owns are ever accepted as targets, verified through sysfs rather than
+  trusted, so an existing webcam on `/dev/video0` cannot be disturbed even when
+  explicitly requested with `--device`.
+- Delegate the relay itself to ffmpeg, and check the address is really a
+  PiCameraService before starting it, so a wrong address or a foreign web server
+  produces one clear sentence instead of an opaque encoder failure.
+- Fail with the exact install and `modprobe` commands for the running
+  distribution when no loopback device exists, and report an unreadable
+  `/etc/os-release` by falling back to a generic instruction.
+- Cover the tool with 55 offline tests that fake sysfs, ffmpeg and the network,
+  so no kernel module, real camera or running Pi is needed. Mutation-test the
+  two safety checks: dropping the real-camera refusal breaks the explicit-device
+  test, and letting automatic selection consider non-loopback devices breaks
+  five more.
+- Verify the complete relay after installing and loading `v4l2loopback`:
+  ffmpeg 9.0.2 wrote the live 1024x768 Pi stream to `/dev/video10` with
+  `exclusive_caps=1`, OpenCV read twelve frames, and the GUI discovered
+  `OpenCV Camera 10`, connected, and received a frame. The existing `/dev/video0`
+  and `/dev/video1` webcams remained untouched. Record the tested kernel/module
+  versions and replace the earlier untested-relay caveat in the service README.
+
+## Serve the Raspberry Pi HQ camera over HTTP
+
+- Add `software/PiCameraService`, an HTTP service that exposes the IMX477 behind
+  a 40x finite-conjugate RMS objective to the workstation. Separate preview from
+  measurement deliberately: `GET /stream.mjpg` is a lossy MJPEG preview for
+  framing and focusing, while `POST /capture` pauses the preview, writes a
+  full-resolution JPEG and a DNG on the Pi, and returns the libcamera metadata
+  alongside the applied controls. A quantitative result therefore never depends
+  on a downscaled network path or on the workstation staying connected.
+- Encode the preview with the hardware MJPEG encoder through the apt-provided
+  `picamera2`, holding the daemon at a flat 57 MB RSS on a 415 MB Pi Zero 2 W
+  from 1024x768 up to 1920x1520. Publish control ranges, current values and the
+  15 sensor modes through `/info` so clients render ranges rather than
+  hard-coding them.
+- Append every still to a `shots.csv` index carrying exposure time, analogue
+  gain, colour gains, sensor timestamp, lux and frame duration, so a measurement
+  can be traced back to the settings that produced it.
+- Treat unknown control names as warnings instead of errors, because the set of
+  controls an IMX477 exposes varies by sensor mode and a client should not need
+  to know the exact list in advance.
+- Default the service library, the daemon CLI, the systemd unit and the GUI
+  client to port 8000, and add a test that parses the GUI source and fails if
+  the two Python definitions drift apart.
+- Document the deployment in `software/PiCameraService/README.md`, including the
+  endpoint table, the measured bandwidth and memory table, the port contract,
+  and the fact that manual address entry is the primary discovery path because
+  zeroconf is absent on this Pi.
+
+## Fix Pi camera preview resolution and shutdown
+
+- Restore the requested stream geometry after enumerating `sensor_modes`.
+  Picamera2's mode enumeration calls `configure()` once per mode and every probe
+  reconfigured the main stream to 640x480, so a 1024x768 request silently
+  produced a 640x480 preview. Re-apply the configuration after the probe and
+  cover it with a regression test that fails if the restore is removed.
+- Exit explicitly once the HTTP server returns, because libcamera's internal
+  threads never join and a plain return left the daemon hanging after `SIGTERM`
+  and after Ctrl-C.
+- Read the camera's device id from `Picamera2.global_camera_info()` instead of
+  `camera_properties`, which has no `Id` key on the real hardware and previously
+  produced a null device id in `/info` and on the index page.
+
 ## Record idle-runaway evidence and saved-calibration verification
 
 - Preserve the investigation sequence in one durable report: motor-disabled

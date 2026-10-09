@@ -1,0 +1,28 @@
+[Unit]
+Description=Raspberry Pi camera service (MJPEG preview + JSON capture API)
+Documentation=https://github.com/naikymen/MicroManipulatorStepper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/PiCameraService
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/pi/PiCameraService/picamera_daemon.py \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --width 1024 \
+    --height 768 \
+    --fps 25 \
+    --quality medium \
+    --capture-dir /home/pi/PiCameraService/captures \
+    --log-level info
+Restart=on-failure
+RestartSec=3
+# Captures are the deliverable of this service; keep them.
+StateDirectory=picamera-service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+# PiCameraService dependencies.
+#
+# On Raspberry Pi OS (Bookworm or newer) the camera stack is part of the base
+# image: picamera2, libcamera and python3-libcamera come from apt and must NOT
+# be replaced with pip versions, because the pip wheels cannot talk to the
+# VC4/PiSP hardware pipelines.
+#
+#   sudo apt install -y python3-picamera2 python3-libcamera python3-zeroconf
+#
+# If you prefer a virtual environment, create it with --system-site-packages so
+# picamera2 from apt stays visible, then install the extras below:
+#
+#   python3 -m venv --system-site-packages .venv
+#   .venv/bin/pip install -r requirements.txt
+#
+# This file therefore only lists optional extras and development tooling.
+zeroconf>=0.131
