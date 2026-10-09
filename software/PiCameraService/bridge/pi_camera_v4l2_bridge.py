@@ -136,7 +136,16 @@ def list_video_devices(sysfs: Path | None = None) -> list[VideoDevice]:
 
 
 def loopback_devices(devices: list[VideoDevice] | None = None) -> list[VideoDevice]:
-    return [d for d in (devices or list_video_devices()) if d.is_loopback]
+    """Return only the loopback devices, re-probing the system if none were given.
+
+    An explicitly empty list is honoured as "no devices". Falling back to the
+    live system for it would let this make a decision about a device the caller
+    had deliberately filtered out, and it made the tests depend on whatever
+    `/dev` happened to contain on the machine running them.
+    """
+    if devices is None:
+        devices = list_video_devices()
+    return [d for d in devices if d.is_loopback]
 
 
 def select_target_device(devices: list[VideoDevice], requested=None) -> VideoDevice:

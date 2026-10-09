@@ -21,6 +21,11 @@ network. See [Preview vs measurement](#preview-vs-measurement).
 Background, optics and the rationale for this design are in
 [the camera setup and design notes](../../documentation/camera/pi_zero_hq_microscope_setup.md).
 
+**Starting from a blank card?** Follow
+[the step-by-step setup guide](../../documentation/camera/pi_camera_quickstart.md)
+instead — it goes from flashing the image to connecting from the workstation.
+This README is the reference for the API, the options and the measurements.
+
 A separate, optional workstation tool — `bridge/pi_camera_v4l2_bridge.py` — can
 relay the preview into a local `v4l2loopback` device so generic Linux
 applications see the camera as a webcam. It is independent of the service and of
@@ -172,9 +177,15 @@ The GUI's default port is **8000**, matching this service. If you change one,
 change the other — a test in [Tests](#tests) fails if they drift apart.
 
 If you use a **USB Ethernet gadget** to connect the Pi directly to the
-workstation, the Pi is typically reachable at `192.168.7.2` (or the address you
-assigned to the `usb0`/`enx...` interface on the workstation side). Type that
-address into the camera box.
+workstation, do not expect a predictable address: `g_ether` assigns none, so you
+either assign a static address to `usb0` yourself or read the link-local address
+off the Pi each time. Type whatever address results into the camera box. Setup
+steps and the caveats are in
+[the camera quickstart](../../documentation/camera/pi_camera_quickstart.md#part-c--usb-gadget-mode-optional-not-verified).
+
+Do not rely on `.local` names. mDNS advertisement from the service is optional,
+and multicast is blocked between clients on many networks — the reference
+environment resolves neither `raspberrypi.local` nor the Pi's real hostname.
 
 ## HTTP API
 

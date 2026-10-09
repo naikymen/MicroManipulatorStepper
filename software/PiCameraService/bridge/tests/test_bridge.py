@@ -195,6 +195,27 @@ class TargetSelectionTests(unittest.TestCase):
             bridge.select_target_device([])
         self.assertIn("modprobe", str(ctx.exception))
 
+    def test_an_empty_device_list_does_not_probe_the_live_system(self):
+        """An empty list must mean "none", not "go and look at /dev".
+
+        It previously fell back to the real device list, so this test passed or
+        failed depending on whether the machine running it happened to have
+        v4l2loopback loaded.
+        """
+        with patch.object(bridge, "list_video_devices") as probe:
+            with self.assertRaises(bridge.BridgeError):
+                bridge.select_target_device([])
+            probe.assert_not_called()
+
+    def test_an_empty_device_list_yields_no_loopback_devices(self):
+        with patch.object(bridge, "list_video_devices") as probe:
+            self.assertEqual(bridge.loopback_devices([]), [])
+            probe.assert_not_called()
+
+    def test_no_devices_yields_no_loopback_devices(self):
+        with patch.object(bridge, "list_video_devices", return_value=[]):
+            self.assertEqual(bridge.loopback_devices(None), [])
+
 
 class InstallHintTests(unittest.TestCase):
     def test_the_install_command_matches_the_distribution(self):

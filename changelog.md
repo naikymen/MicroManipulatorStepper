@@ -1,5 +1,36 @@
 # Changelog
 
+## Document the camera setup end to end and fix the bridge's device list
+
+- Fix `loopback_devices()` treating an empty device list as "no list given" and
+  silently probing the live system. A caller that had deliberately filtered the
+  list out could therefore be handed a device it never approved, and the bridge's
+  own tests passed or failed depending on whether the machine running them had
+  `v4l2loopback` loaded. Honour an explicit empty list, and add three regressions
+  that fail against the previous implementation.
+- Add `documentation/camera/pi_camera_quickstart.md`, a linear walkthrough from
+  flashing the microSD card to connecting from a Linux workstation, with a
+  checkpoint after every stage so a hardware fault is caught before software is
+  installed on top of it. Record which parts were verified on hardware and which
+  were not.
+- Correct the USB gadget claim. The README asserted the Pi is "typically
+  reachable at `192.168.7.2`", which is BeagleBone convention; `g_ether` assigns
+  no address at all, so the guide documents the link-local, mDNS and static
+  options instead and warns that a static address is the only predictable one.
+  The gadget section is also the only unverified part of the guide.
+- Warn against relying on mDNS. Neither the built-in default names nor the
+  reference Pi's own hostname resolved from the workstation even with
+  `avahi-daemon` active on both ends and mDNS listening, so the guide leads with
+  the IP address and treats `.local` names as best-effort.
+- Record the traps that cost real time: the Pi Zero's 22-pin camera connector
+  against the HQ Camera's 15-pin cable, `libcamera-hello` no longer existing
+  because the tools are now `rpicam-*`, `vcgencmd get_camera` reporting
+  `detected=0` on a working camera, `--list-controls` failing with "Device or
+  resource busy" whenever a daemon already owns the sensor, and `--capture-dir`
+  being relative to the current directory.
+- Note that the Pi has no `git` installed, so the service is deployed with
+  `rsync` rather than cloned.
+
 ## Relay the Pi camera preview into a local video device
 
 - Add `software/PiCameraService/bridge/pi_camera_v4l2_bridge.py`, a
@@ -19,7 +50,7 @@
 - Fail with the exact install and `modprobe` commands for the running
   distribution when no loopback device exists, and report an unreadable
   `/etc/os-release` by falling back to a generic instruction.
-- Cover the tool with 55 offline tests that fake sysfs, ffmpeg and the network,
+- Cover the tool with 58 offline tests that fake sysfs, ffmpeg and the network,
   so no kernel module, real camera or running Pi is needed. Mutation-test the
   two safety checks: dropping the real-camera refusal breaks the explicit-device
   test, and letting automatic selection consider non-loopback devices breaks

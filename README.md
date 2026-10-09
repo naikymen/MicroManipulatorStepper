@@ -57,7 +57,7 @@ WARNING: BOM is not updated yet...
 To make testing and using the Open-Micro Manipulator easy and convenient a python control program with a graphical user interface is provided here: [Open Micro-Manipulator GUI](https://github.com/0x23/OpenMicroManipulatorGUI).
 It has simple controlls to move the device around, while also displaying a live camera feed (e.g. from a microscope camera). Additional features, include a simple g-code runner and realtime mouse control (e.g. for Biology applications).
 
-For Raspberry Pi HQ Camera microscopy, see the [camera setup and design notes](documentation/camera/pi_zero_hq_microscope_setup.md) and the [PiCameraService deployment and API guide](software/PiCameraService/README.md).
+For Raspberry Pi HQ Camera microscopy, start with the [step-by-step camera setup guide](documentation/camera/pi_camera_quickstart.md), then see the [camera setup and design notes](documentation/camera/pi_zero_hq_microscope_setup.md) for the optics and measurement design and the [PiCameraService deployment and API guide](software/PiCameraService/README.md) for the service reference.
 
 <div style="display: flex;">
     <img src="images/grain_manipulation_2.jpg" alt="Open Micro-Manipulator GUI" width="50%">
