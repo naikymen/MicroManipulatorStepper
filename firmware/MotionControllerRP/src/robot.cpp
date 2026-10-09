@@ -1006,6 +1006,20 @@ bool Robot::calibrate_joint(int joint_idx, bool store_calibration, bool print_me
   spin_lock_unsafe_blocking(joints_spin_lock);
 
   bool calibration_ok = joint->calibrate(print_measurements);
+  #ifdef SERVO_IDLE_DIAGNOSTIC
+    // The upstream measurement routine warns about CRC errors but can still
+    // fit/save a table. Refuse it in this diagnostic before any flash write.
+    if(joint->encoder->get_crc_error_count(false) != 0 || joint->encoder->get_status() != 0) {
+      LOG_ERROR("CAL GUARD: encoder errors reported; calibration not saved");
+      calibration_ok = false;
+    }
+    if(!calibration_ok) {
+      joint->is_homed = false;
+      joint->is_calibrated = false;
+      joint->servo_controller->get_motor_driver().set_amplitude(0.0f, true);
+      all_joints_ready = false;
+    }
+  #endif
   if(!calibration_ok) {
     spin_unlock_unsafe(joints_spin_lock);
     return false;

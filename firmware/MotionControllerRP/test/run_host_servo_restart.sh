@@ -48,10 +48,13 @@ for mode in normal early_restore; do
   printf '%s homing backoff order\n' "$mode"
   "$test_tmp/servo_check"
 done
-for mode in normal ram_reference; do
+for mode in normal ram_reference protected_reference; do
   extra_flags=()
   if [[ "$mode" == ram_reference ]]; then
     extra_flags+=(-DCALIBRATION_REFERENCE_TEST)
+  fi
+  if [[ "$mode" == protected_reference ]]; then
+    extra_flags+=(-DCALIBRATION_REFERENCE_TEST -DSERVO_IDLE_DIAGNOSTIC)
   fi
   {
     sed -n '1,/^int main()/p' "$test_root/test/host_calibration_reference.cpp" | sed '$d'

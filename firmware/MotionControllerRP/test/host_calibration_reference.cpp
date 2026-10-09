@@ -7,17 +7,32 @@ constexpr int NUM_JOINTS = 3;
 #define LOG_ERROR(...) ((void)0)
 void spin_lock_unsafe_blocking(int) {}
 void spin_unlock_unsafe(int) {}
-struct Servo {};
+struct Encoder {
+  unsigned crc_errors = 0, status = 0;
+  unsigned get_crc_error_count(bool) { return crc_errors; }
+  unsigned get_status() { return status; }
+};
+struct Driver {
+  float amplitude = .3f;
+  void set_amplitude(float value, bool) { amplitude = value; }
+};
+struct Servo {
+  Driver driver;
+  Driver& get_motor_driver() { return driver; }
+};
 struct JointHomeReference {
   bool valid = false;
   float final_position = 0, measured_clearance = 0, away_from_stop_sign = 1;
 };
 struct RobotJoint {
+  Encoder enc;
+  Encoder* encoder = &enc;
   Servo servo;
   Servo* servo_controller = &servo;
   bool success = true;
   int measurements = 0, saves = 0;
   bool save_success = true;
+  bool is_homed = true, is_calibrated = true;
   bool calibrate(bool) { measurements++; return success; }
   bool store_calibration() { saves++; return save_success; }
 };
@@ -78,5 +93,24 @@ int main() {
   save_failed.storage[2].save_success = false;
   assert(!save_failed.calibrate_joint(2, true, false));
   assert(save_failed.storage[2].saves == 1);
+  #ifdef SERVO_IDLE_DIAGNOSTIC
+    assert(!failed.storage[2].is_homed && !failed.storage[2].is_calibrated);
+    assert(failed.storage[2].servo.driver.amplitude == 0);
+    for(bool save : {false, true}) {
+      for(bool crc_fault : {true, false}) {
+        Robot corrupt;
+        corrupt.all_joints_ready = true;
+        corrupt.storage[2].enc.crc_errors = crc_fault ? 1 : 0;
+        corrupt.storage[2].enc.status = crc_fault ? 0 : 2;
+        assert(!corrupt.calibrate_joint(2, save, false));
+        assert(corrupt.storage[2].measurements == 1 && corrupt.storage[2].saves == 0);
+        assert(!corrupt.storage[2].is_homed && !corrupt.storage[2].is_calibrated);
+        assert(corrupt.storage[2].servo.driver.amplitude == 0 && !corrupt.all_joints_ready);
+        assert(corrupt.storage[0].servo.driver.amplitude == .3f);
+        assert(corrupt.storage[1].servo.driver.amplitude == .3f);
+      }
+    }
+    puts("PASS: diagnostic refuses CRC/status-contaminated measurements before flash writes and removes motor power/readiness.");
+  #endif
   puts("PASS: actual calibration isolates the selected axis, preserves flash without S, reports save failures, skips diagnostic restart, preserves normal refusal handling.");
 }

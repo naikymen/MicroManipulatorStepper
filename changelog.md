@@ -1,5 +1,22 @@
 # Changelog
 
+## Protect diagnostic calibration persistence and compare references
+
+- Add `servo_reference_diagnostic` to combine the feedback recorder with the
+  existing fresh-versus-current calibration comparison and skipped M56
+  feedback restart. This allows comparison before deliberately saving a new
+  reference, without changing calibration fitting, speed, or current limits.
+- Refuse measurement CRC errors or an uncleared final encoder status before
+  writing calibration files in protected diagnostic builds. On failure,
+  invalidate the selected joint's readiness and remove its PWM output rather
+  than accepting a potentially corrupted calibration. This guard is optional;
+  normal calibration behavior is unchanged, and a clear final status cannot
+  rule out every transient non-CRC error during measurement.
+- Extend host regressions to verify CRC/status failures cannot invoke flash
+  storage, alongside normal and RAM-reference completion behavior. Document
+  unsaved comparison, explicit measurement-and-save commands, and recovery
+  limitations. Normal and both diagnostic builds pass.
+
 ## Add an optional idle feedback fault recorder
 
 - Add `servo_idle_diagnostic` with a bounded in-memory feedback record,

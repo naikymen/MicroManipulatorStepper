@@ -499,10 +499,28 @@ motion automatically or change PID gains, current limits, or saved tables.
 Build/upload it with `pio run -e servo_idle_diagnostic -t upload` in
 `firmware/MotionControllerRP`.
 
+`servo_reference_diagnostic` adds the existing calibration-reference
+comparison to that recorder. Build/upload it with
+`pio run -e servo_reference_diagnostic -t upload` in the same directory.
+`M56 J1` measures fresh Y-associated lookup tables in RAM and logs their
+difference from the current tables; it skips the automatic feedback restart
+after measurement. Omit `S` to leave saved files untouched. A subsequent
+normal `G28` uses the fresh RAM tables. Reboot/reflash reloads the saved tables.
+`M56 J1 S` and `M56 J2 S` repeat measurement and save joints 2/3, respectively;
+they are not commands to save a previous RAM-only measurement. This
+environment changes neither the calibration algorithm nor its current/speed
+settings.
+
 The diagnostic enables encoder CRC checking. A CRC-rejected reading does not
 change the accumulated encoder position or the raw-angle history used to
 count revolutions. CRC is not proof of a correct position: an entirely zero
 reply also has a valid CRC. Some modules may not support CRC correctly.
+This diagnostic also rejects a completed calibration if its measurement CRC
+counter or final encoder status indicates errors, before saving any tables.
+It clears the selected joint's homed/calibrated status and sets its PWM
+amplitude to zero on failure. A clear final status does not rule out transient
+non-CRC status errors during open-loop measurement. The normal environment's
+calibration behavior is unchanged.
 
 While feedback controls a powered motor, it stops on an encoder status error,
 a reading outside calibration, or non-finite control values. It also stops
