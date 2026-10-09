@@ -1,5 +1,13 @@
 # Changelog
 
+## Give the Python API time to finish normal Home
+
+- Increase the standalone Python API's G28 reply timeout from 10 to 30 seconds
+  so the physical-stop search, measured backoff, guarded feedback handover
+  and final move into the usable range can finish before a timeout is reported.
+- Preserve the existing homing command and return status. This changes the
+  host-side wait only; it does not modify firmware, motion limits or calibration.
+
 ## Make calibration and Home finish at verified, usable positions
 
 - Establish calibration's measurement origin only after raw encoder movement
