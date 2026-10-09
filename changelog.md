@@ -1,5 +1,31 @@
 # Changelog
 
+## Add an optional idle feedback fault recorder
+
+- Add `servo_idle_diagnostic` with a bounded in-memory feedback record,
+  CRC-rejected sample retention, conservative error checks, and immediate
+  all-joint PWM shutdown with a reboot-only fault latch. The normal `pico`
+  environment retains its existing CRC setting and behavior.
+- Add `M60 J0/J1/J2` to retrieve chronological samples after shutdown without
+  printing in the active servo loop. Document units, thresholds, fault numbers,
+  and limitations: valid CRC does not guarantee a valid angle, and this is not
+  an independent emergency stop.
+- Add host checks of the actual servo/Robot update and encoder reader for
+  recording order, fault retention, all-joint shutdown, and rejected-packet
+  revolution history. Normal and diagnostic firmware builds pass.
+- During motor-disabled diagnosis, encoder 2 showed startup register failure,
+  continuing CRC errors and abrupt zero readings. Encoder-only 8/1/8 MHz
+  comparisons produced 4,015/0/4,770 reported CRC failures on that channel;
+  the other two channels had none. Record this evidence without claiming a
+  particular failed wire or proof of the original runaway's cause. Those
+  initial tests used no motion or recalibration.
+- Reset diagnostic duration timers when power or feedback is paused/restarted
+  so disabled time cannot falsely satisfy a continuous-error timeout. Add
+  regressions for paused feedback, invalid numeric inputs, and refusal to
+  re-enable a latched joint. Keep the encoder fixture in a readable C++ file
+  instead of inline shell-generated test statements. Production protection
+  thresholds remain disabled.
+
 ## Update the GUI for selective calibration, homing and motor disable
 
 - Advance the GUI submodule from `112c096` to `a8fc49e`, incorporating three

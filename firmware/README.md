@@ -491,6 +491,87 @@ computed but no further field write is allowed; `field_d` still reports the
 last applied field. Snapshots stay in memory during the pulse and are printed
 afterward so serial output does not interrupt active servo control.
 
+### Idle feedback fault recorder
+
+`servo_idle_diagnostic` uses normal homing and saved calibration, with an
+optional recorder and automatic motor-output shutdown. It does not start
+motion automatically or change PID gains, current limits, or saved tables.
+Build/upload it with `pio run -e servo_idle_diagnostic -t upload` in
+`firmware/MotionControllerRP`.
+
+The diagnostic enables encoder CRC checking. A CRC-rejected reading does not
+change the accumulated encoder position or the raw-angle history used to
+count revolutions. CRC is not proof of a correct position: an entirely zero
+reply also has a valid CRC. Some modules may not support CRC correctly.
+
+While feedback controls a powered motor, it stops on an encoder status error,
+a reading outside calibration, or non-finite control values. It also stops
+if target-minus-measured position exceeds 1 motor-shaft degree immediately,
+or 0.15 motor-shaft degree for 50 ms; or if the PID field correction remains
+at least 78 electrical degrees for 100 ms after the homing handover. The
+existing handover-failure check also cuts output in this build. These are
+conservative diagnostic thresholds, not validated limits for normal motion.
+Their duration timers reset when motor power or feedback is paused/restarted;
+time spent disabled cannot count toward a continuous-error cutoff.
+
+A fault switches all three motor PWM amplitudes to zero on the servo core,
+invalidates homing, freezes all records, and prevents commands from enabling
+motion again. The fault remains latched until reboot. `M18`, `M57`, `M58`, and
+`M60` remain available; do not reboot/reflash before collecting the records.
+This is software protection, not an independent hardware emergency stop.
+
+`M60 J0`, `M60 J1`, and `M60 J2` dump each joint's chronological record.
+Each holds 512 samples, collected at most once per millisecond, plus a forced
+final fault sample replacing the oldest entry when full. This normally covers
+roughly the preceding half-second. Recording does not write serial output or
+flash during control; dumping copies the record under the joint lock and
+prints after releasing it. A disabled motor does not fill the trace.
+
+The header contains the zero-based joint, fault number, frozen flag, and
+sample count. Fault numbers are: 0 none, 1 encoder status, 2 calibration range,
+3 invalid number, 4 tracking error, 5 sustained correction, 6 failed homing
+handover. Other joints can be frozen with fault 0 when one joint fails.
+
+CSV columns:
+
+| Column | Meaning |
+| --- | --- |
+| `time_us` | Microseconds since firmware startup. |
+| `raw` | Accepted accumulated encoder count; on CRC rejection, the previous accepted count. |
+| `status` | Encoder flags: 1 overspeed, 2 weak field, 4 undervoltage, 8 CRC failure; flags can combine. |
+| `target_deg` | Requested calibrated motor-shaft position, degrees. |
+| `measured_deg` | Calibrated motor-shaft position derived from feedback, degrees. |
+| `velocity_deg_s` | Filtered measured motor-shaft speed, degrees/second. |
+| `correction_deg` | Computed PID correction to the drive field, electrical degrees. |
+| `field_deg` | Last field angle actually written to the driver, electrical degrees. |
+| `dt_us` | Time interval passed to the controller, microseconds; not necessarily the wall-clock sample interval. |
+
+An early encoder-status/range fault is recorded before converting or applying
+that reading: the measured position and controller values then describe the
+previous update. At any fault, `field_deg` retains the last applied field,
+not a rejected new command. An encoder error demonstrates a detected feedback
+problem, but does not by itself identify a wire, module, or the original
+runaway's cause. A trace with no CRC errors also cannot rule out bad feedback.
+
+For a motor-disabled SPI-speed comparison, `encoder_spi8m_test` runs the
+existing wiring diagnostic at normal firmware's 8 MHz, whereas
+`encoder_wiggle_test` uses 1 MHz. Both disable the drivers and report CRC,
+status, raw-angle changes, and periodic register communication checks.
+
+Host checks (no device access):
+
+```bash
+bash firmware/MotionControllerRP/test/run_host_feedback_diagnostic.sh
+bash firmware/MotionControllerRP/test/run_host_encoder_rejection.sh
+```
+
+These checks compile the actual update, shutdown, enable/restart, and encoder
+reader methods against mocked hardware. They cover chronological records,
+fault latching and all-joint shutdown, rejected-packet revolution history,
+invalid numeric inputs, refusal to re-enable after a fault, and duration-timer
+reset across a feedback pause. They do not establish physical safety or
+detect every possible corrupted encoder reply.
+
 ### Restore normal firmware
 
 Build and upload the default `pico` environment again:

@@ -101,6 +101,11 @@ MT6835Encoder::AbsRawAngleType MT6835Encoder::read_abs_angle_raw() {
       if (last_crc != calc_crc(raw_angle, last_status)) {
           last_status |= MT6835_CRC_ERROR;
           crc_error_count++;
+          #ifdef SERVO_IDLE_DIAGNOSTIC
+          // A rejected sample must not change either the position or the
+          // previous raw angle used to count complete encoder periods.
+          return abs_raw_angle;
+          #endif
           // LOG_ERROR("chip_crc: %i - calc_crc: %i", last_crc, calc_crc(raw_angle, last_status));
      //     return -1.0f; // CRC error indicator
       }

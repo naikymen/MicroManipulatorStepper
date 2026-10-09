@@ -286,6 +286,14 @@ void Robot::update_servo_controllers(float dt) {
   // stale targets, wait through Home, then apply them to freshly restarted PIDs.
   spin_lock_unsafe_blocking(joints_spin_lock);
   // update axis target position and velocity from shared data
+  #ifdef SERVO_IDLE_DIAGNOSTIC
+    for(int i=0; i<NUM_JOINTS; ++i) {
+      if(joints[i]->servo_controller->feedback_fault != ServoController::FeedbackFault::None) {
+        spin_unlock_unsafe(joints_spin_lock);
+        return;
+      }
+    }
+  #endif
   spin_lock_unsafe_blocking(shared_data.lock);
   for(int i=0; i<3; i++) {
     joints[i]->update_target(shared_data.joint_target_positions[i], 
@@ -296,6 +304,19 @@ void Robot::update_servo_controllers(float dt) {
   // update servo loop for each axis
   for(int i=0; i<NUM_JOINTS; i++) {
     joints[i]->update(dt, one_over_dt);
+    #ifdef SERVO_IDLE_DIAGNOSTIC
+      if(joints[i]->servo_controller->feedback_fault != ServoController::FeedbackFault::None) {
+        // No sleeps or serial writes on core 1. Shut off each PWM immediately;
+        // freezing all records preserves the other axes at the same event.
+        for(int j=0; j<NUM_JOINTS; ++j) {
+          joints[j]->servo_controller->stop_feedback_output();
+          joints[j]->is_homed = false;
+          joint_home_references[j] = JointHomeReference{};
+        }
+        all_joints_ready = false;
+        break;
+      }
+    #endif
   }
   spin_unlock_unsafe(joints_spin_lock);
 
@@ -1038,6 +1059,18 @@ void Robot::send_reply(const char* str) {
 }
 
 void Robot::process_command(const GCodeCommand& cmd, std::string& reply) {
+  #ifdef SERVO_IDLE_DIAGNOSTIC
+    bool faulted = false;
+    spin_lock_unsafe_blocking(joints_spin_lock);
+    for(int i=0; i<NUM_JOINTS; ++i)
+      faulted |= joints[i]->servo_controller->feedback_fault != ServoController::FeedbackFault::None;
+    spin_unlock_unsafe(joints_spin_lock);
+    if(faulted && cmd.get_command() != "M18" && cmd.get_command() != "M57" &&
+       cmd.get_command() != "M58" && cmd.get_command() != "M60") {
+      reply = "error: latched feedback fault; read M60 trace and reboot before recovery\n";
+      return;
+    }
+  #endif
   if(cmd.get_command() == "G0") process_motion_command(cmd, reply);
   else if(cmd.get_command() == "G1") process_motion_command(cmd, reply);
   else if(cmd.get_command() == "G4") process_dwell_command(cmd, reply);
@@ -1049,6 +1082,42 @@ void Robot::process_command(const GCodeCommand& cmd, std::string& reply) {
 
 void Robot::process_machine_command(const GCodeCommand& cmd, std::string& reply) {
   reply = "";
+
+  #ifdef SERVO_IDLE_DIAGNOSTIC
+    if(cmd.get_command() == "M60") {
+      float requested = cmd.get_value('J', 1);
+      if(!std::isfinite(requested) || requested < 0 || requested >= NUM_JOINTS ||
+         requested != floorf(requested)) {
+        reply = "error: M60 requires a zero-based joint J0, J1, or J2\n";
+        return;
+      }
+      int idx = int(requested);
+      // Copy while locked, print after releasing: USB backpressure must never
+      // delay feedback updates. No trace data are written to flash.
+      std::vector<ServoController::FeedbackSample> samples;
+      samples.reserve(ServoController::feedback_trace_capacity);
+      spin_lock_unsafe_blocking(joints_spin_lock);
+      auto* servo = joints[idx]->servo_controller;
+      auto fault = servo->feedback_fault;
+      bool frozen = servo->feedback_trace_frozen;
+      uint32_t count = servo->feedback_trace_count;
+      uint32_t start = (servo->feedback_trace_next + ServoController::feedback_trace_capacity-count)
+                       % ServoController::feedback_trace_capacity;
+      for(uint32_t n=0; n<count; ++n)
+        samples.push_back(servo->feedback_trace[(start+n)%ServoController::feedback_trace_capacity]);
+      spin_unlock_unsafe(joints_spin_lock);
+      LOG_RAW("TRACE joint=%i fault=%i frozen=%i samples=%lu", idx, int(fault), int(frozen), (unsigned long)count);
+      LOG_RAW("time_us,raw,status,target_deg,measured_deg,velocity_deg_s,correction_deg,field_deg,dt_us");
+      for(const auto& s : samples)
+        LOG_RAW("%llu,%li,%u,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e",
+                (unsigned long long)s.time_us, (long)s.raw, unsigned(s.status),
+                s.target*Constants::RAD2DEG, s.measured*Constants::RAD2DEG,
+                s.velocity*Constants::RAD2DEG, s.correction*Constants::RAD2DEG,
+                s.field*Constants::RAD2DEG, s.dt*1e6f);
+      reply = "ok\n";
+      return;
+    }
+  #endif
 
   // process tool output command
   if(cmd.get_command() == "M3") {
@@ -1162,7 +1231,11 @@ void Robot::process_machine_command(const GCodeCommand& cmd, std::string& reply)
       reply += std::string(",  is_calibrated=") + std::to_string(joints[i]->is_calibrated);
       reply += std::string(",  encoder_angle=") + std::to_string(angle) + " deg";
       reply += std::string(",  crc_errors=") + std::to_string(crc_errors); 
-      reply += std::string(",  enc_status=") + std::to_string(joints[i]->encoder->get_status()) + "\n"; 
+      reply += std::string(",  enc_status=") + std::to_string(joints[i]->encoder->get_status()) + "\n";
+      #ifdef SERVO_IDLE_DIAGNOSTIC
+        reply += "Feedback fault=" + std::to_string(int(joints[i]->servo_controller->feedback_fault)) +
+                 " frozen=" + std::to_string(joints[i]->servo_controller->feedback_trace_frozen) + "\n";
+      #endif
       auto* servo = joints[i]->servo_controller;
       auto& driver = servo->get_motor_driver();
       int32_t raw = joints[i]->encoder->get_last_abs_raw_angle();

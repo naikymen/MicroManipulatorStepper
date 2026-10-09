@@ -41,7 +41,11 @@ constexpr float ENCODER_ANGLE_TO_ROTOR_ANGLE = (ENCODER_MAGNET_PITCH*2.0f) /
 											   
 // enables error checking for encoders (slow) - useful for debugging
 // Note: some chips seem to return always a crc of 0 producing massiv false errors       
+#ifdef SERVO_IDLE_DIAGNOSTIC
+constexpr bool ENABLE_ENCODER_CRC = true;
+#else
 constexpr bool ENABLE_ENCODER_CRC = false;
+#endif
 
 //--- HOMING ------------------------------------------------------------------
 

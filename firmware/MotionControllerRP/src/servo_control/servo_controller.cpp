@@ -86,6 +86,27 @@ void ServoController::update(float target_motor_pos, float dt, float one_over_dt
   // read encoder
   int32_t encoder_angle_raw = encoder.read_abs_angle_raw();
 
+  #ifdef SERVO_IDLE_DIAGNOSTIC
+    if(feedback_fault != FeedbackFault::None) return;
+    if(!motor_update_enabled || motor_driver.get_amplitude() == 0.0f)
+      feedback_tracking_since = feedback_correction_since = 0;
+    if(motor_update_enabled && motor_driver.get_amplitude() > 0.0f) {
+      if(encoder.get_status() != 0) {
+        trip_feedback(FeedbackFault::EncoderStatus, encoder_angle_raw, target_motor_pos, dt);
+        return;
+      }
+      if(!encoder_raw_to_motor_pos_lut.in_input_range(encoder_angle_raw)) {
+        trip_feedback(FeedbackFault::CalibrationRange, encoder_angle_raw, target_motor_pos, dt);
+        return;
+      }
+      if(!std::isfinite(target_motor_pos) || !std::isfinite(dt) || dt <= 0.0f ||
+         !std::isfinite(one_over_dt) || one_over_dt <= 0.0f) {
+        trip_feedback(FeedbackFault::InvalidNumber, encoder_angle_raw, target_motor_pos, dt);
+        return;
+      }
+    }
+  #endif
+
   // convert encoder angle to motor pos using LUT and compute field angle
   motor_pos = encoder_angle_to_motor_pos(encoder_angle_raw);
   pos_error = target_motor_pos-motor_pos;
@@ -110,6 +131,9 @@ void ServoController::update(float target_motor_pos, float dt, float one_over_dt
         homing_handover.active = false;
         homing_handover.failed = true;
         motor_update_enabled = false;
+        #ifdef SERVO_IDLE_DIAGNOSTIC
+          trip_feedback(FeedbackFault::HandoverFailed, encoder_angle_raw, target_motor_pos, dt);
+        #endif
         return;
       }
     }
@@ -130,6 +154,32 @@ void ServoController::update(float target_motor_pos, float dt, float one_over_dt
 
   // torque controll loop
   output = torque_target;
+
+  #ifdef SERVO_IDLE_DIAGNOSTIC
+    if(motor_update_enabled) {
+      if(!std::isfinite(motor_pos) || !std::isfinite(pos_error) ||
+         !std::isfinite(velocity) || !std::isfinite(output) || !std::isfinite(field_angle)) {
+        trip_feedback(FeedbackFault::InvalidNumber, encoder_angle_raw, target_motor_pos, dt);
+        return;
+      }
+      uint64_t now = time_us_64();
+      if(fabsf(pos_error) > 0.15f*Constants::DEG2RAD) {
+        if(feedback_tracking_since == 0) feedback_tracking_since = now;
+      } else feedback_tracking_since = 0;
+      if(fabsf(output) >= 78.0f*Constants::DEG2RAD && !homing_handover.active) {
+        if(feedback_correction_since == 0) feedback_correction_since = now;
+      } else feedback_correction_since = 0;
+      if(fabsf(pos_error) > 1.0f*Constants::DEG2RAD ||
+         (feedback_tracking_since && now-feedback_tracking_since >= 50000)) {
+        trip_feedback(FeedbackFault::TrackingError, encoder_angle_raw, target_motor_pos, dt);
+        return;
+      }
+      if(feedback_correction_since && now-feedback_correction_since >= 100000) {
+        trip_feedback(FeedbackFault::SustainedCorrection, encoder_angle_raw, target_motor_pos, dt);
+        return;
+      }
+    }
+  #endif
 
   // set new field direction
   // motor_driver.set_amplitude(std::clamp(abs(output*10.0f), 0.1f, 0.5f), false);
@@ -206,7 +256,38 @@ void ServoController::update(float target_motor_pos, float dt, float one_over_dt
 
   // store values for next update
   motor_pos_prev = motor_pos;
+  #ifdef SERVO_IDLE_DIAGNOSTIC
+    if(motor_update_enabled) record_feedback(encoder_angle_raw, target_motor_pos, dt);
+  #endif
 }
+
+#ifdef SERVO_IDLE_DIAGNOSTIC
+void ServoController::record_feedback(int32_t raw, float target, float dt, bool force) {
+  if(feedback_trace_frozen) return;
+  uint64_t now = time_us_64();
+  if(!force && now-feedback_last_sample_us < 1000) return;
+  feedback_last_sample_us = now;
+  auto& sample = feedback_trace[feedback_trace_next];
+  sample = FeedbackSample{now, raw, encoder.get_status(), target, motor_pos,
+                          velocity, output, motor_driver.get_field_angle(), dt};
+  feedback_trace_next = (feedback_trace_next+1)%feedback_trace_capacity;
+  feedback_trace_count = std::min(feedback_trace_count+1, feedback_trace_capacity);
+}
+
+void ServoController::stop_feedback_output() {
+  feedback_trace_frozen = true;
+  motor_update_enabled = false;
+  motor_driver.set_amplitude(0.0f, true);
+  pos_controller.reset();
+  velocity_controller.reset();
+}
+
+void ServoController::trip_feedback(FeedbackFault reason, int32_t raw, float target, float dt) {
+  record_feedback(raw, target, dt, true);
+  feedback_fault = reason;
+  stop_feedback_output();
+}
+#endif
 
 bool ServoController::at_position(float motor_pos_eps) {
   return fabs(pos_error) < motor_pos_eps;
@@ -297,6 +378,11 @@ float ServoController::get_pole_pair_count() {
 }
 
 void ServoController::set_motor_enabled(bool enable, bool synchronize_field_angle) {
+  #ifdef SERVO_IDLE_DIAGNOSTIC
+    if(enable && feedback_trace_frozen) return;
+    // Threshold durations count continuous powered feedback, not time off.
+    feedback_tracking_since = feedback_correction_since = 0;
+  #endif
   if(enable) {
     // All three drivers share the hardware enable pin. It may have been put in
     // standby by M18 or a diagnostic, so always reassert it before ramping PWM.
@@ -321,6 +407,10 @@ void ServoController::set_motor_enabled(bool enable, bool synchronize_field_angl
 
 // enable or disable servo loop update and encoder reads
 void ServoController::set_motor_update_enabled(bool enable, const float* measured_position) {
+  #ifdef SERVO_IDLE_DIAGNOSTIC
+    if(enable && feedback_trace_frozen) return;
+    feedback_tracking_since = feedback_correction_since = 0;
+  #endif
   if(enable) {
     // Open-loop homing may have moved the motor while servo updates were blocked.
     // Start velocity estimation from a fresh encoder position, not the old cache.
@@ -347,6 +437,10 @@ void ServoController::set_motor_update_enabled(bool enable, const float* measure
 }
 
 void ServoController::start_homing_handover(float measured_position) {
+  #ifdef SERVO_IDLE_DIAGNOSTIC
+    if(feedback_trace_frozen) return;
+    feedback_tracking_since = feedback_correction_since = 0;
+  #endif
   motor_pos = measured_position;
   motor_pos_prev = measured_position;
   pos_error = 0.0f;

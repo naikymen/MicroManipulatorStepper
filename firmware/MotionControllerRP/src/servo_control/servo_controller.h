@@ -103,6 +103,30 @@ class ServoController {
     // enable or disable encoder reads
     void set_encoder_update_enabled(bool enable);
 
+    #ifdef SERVO_IDLE_DIAGNOSTIC
+      enum class FeedbackFault : uint8_t {
+        None, EncoderStatus, CalibrationRange, InvalidNumber, TrackingError,
+        SustainedCorrection, HandoverFailed
+      };
+      struct FeedbackSample {
+        uint64_t time_us = 0;
+        int32_t raw = 0;
+        uint8_t status = 0;
+        float target = 0, measured = 0, velocity = 0;
+        float correction = 0, field = 0, dt = 0;
+      };
+      static constexpr uint32_t feedback_trace_capacity = 512;
+      FeedbackSample feedback_trace[feedback_trace_capacity]{};
+      uint32_t feedback_trace_next = 0, feedback_trace_count = 0;
+      uint64_t feedback_last_sample_us = 0;
+      uint64_t feedback_tracking_since = 0, feedback_correction_since = 0;
+      FeedbackFault feedback_fault = FeedbackFault::None;
+      bool feedback_trace_frozen = false;
+      void record_feedback(int32_t raw, float target, float dt, bool force=false);
+      void trip_feedback(FeedbackFault reason, int32_t raw, float target, float dt);
+      void stop_feedback_output();
+    #endif
+
     #ifdef HOMING_SERVO_PULSE_TEST
       #ifdef HOMING_SERVO_PULSE_US
         static constexpr uint64_t restart_pulse_duration_us = HOMING_SERVO_PULSE_US;
