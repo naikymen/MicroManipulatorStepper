@@ -1,5 +1,20 @@
 # Changelog
 
+## Update the GUI for selective calibration, homing and motor disable
+
+- Advance the GUI submodule from `112c096` to `a8fc49e`, incorporating three
+  focused commits: the 30-second homing reply timeout (`063e909`), shared axis
+  homing/calibration controls (`96fdb0e`) and Disable Motors (`a8fc49e`).
+- Include one full-width All/X/Y/Z selector with axis, joint and G28-letter
+  labels above Home Axis, Calibrate Axis and Save. Preserve the all-axis
+  default and checked persistence default while allowing individual joints
+  and unsaved in-memory calibration.
+- Add Disable Motors beside Set Origin with GUI playback shutdown and visible
+  failure handling. It removes holding torque and is not an emergency stop.
+- Include documentation, commit-specific GUI changelog entries and 28 passing
+  offline Qt/API tests. Also verify the standalone API's 30-second Home wait
+  with mocked serial access; no device or camera was accessed for these checks.
+
 ## Give the Python API time to finish normal Home
 
 - Increase the standalone Python API's G28 reply timeout from 10 to 30 seconds
